@@ -271,3 +271,28 @@ async def test_random(dut):
         dut._log.info(f"trial {t} OK")
 
     dut._log.info(f"random test PASSED ({trials} trials)")
+
+
+@cocotb.test()
+async def test_dense_mode(dut):
+    """Dense mode: all select bits = 0 (Roune: 'set the upper 8th bit to zero').
+    Only even positions (k=2j) get values; odd positions are always zero.
+    This gives dense operation at half throughput — same as NVIDIA's dense
+    mode for 2:4 sparsity.
+    """
+    start_clock(dut)
+    await hw_reset(dut)
+
+    A = [[1, 2, 3, 4, 5, 6],
+         [-1, -2, -3, -4, -5, -6],
+         [7, -8, 7, -8, 7, -8]]
+
+    # All select=0: only k=0,2,4 get values; k=1,3,5 are always zero
+    wbytes = [[0x03, 0x05, 0x07],   # col 0: W[0]=3, W[2]=5, W[4]=7
+              [0x7E, 0x7C, 0x7A],   # col 1: W[0]=-2, W[2]=-4, W[4]=-6
+              [0x01, 0x02, 0x03]]   # col 2: W[0]=1, W[2]=2, W[4]=3
+
+    results = await run_matmul(dut, A, wbytes)
+    dut._log.info(f"dense results: {results}")
+    check(dut, results, golden_matmul(A, wbytes), "dense")
+    dut._log.info("dense mode test PASSED")
