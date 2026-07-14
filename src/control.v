@@ -12,8 +12,10 @@
  *          [10:8]  elem  (A: element 0-5, B: pair slot 0-2)
  *          [7:0]   imm   (A: INT4 in imm[3:0], B: Int7+1 byte)
  *
- *   RUN:   clears accumulators, streams the skewed wavefront for
- *          2N+1 = 7 cycles (K=6 contraction: 3 pair steps).
+ *   RUN:   [13] dense_mode (0 = Int7+1 sparse K=6, 1 = int8 dense K=3)
+ *          Clears accumulators, streams the skewed wavefront for
+ *          2N+1 = 7 cycles (3 weight-byte steps either way — sparse
+ *          covers two contraction steps per byte, dense covers one).
  *
  *   STORE: [13]    byte_sel (0 = acc[7:0], 1 = {4'b0, acc[11:8]})
  *          [12:11] row, [10:9] col
@@ -34,6 +36,7 @@ module control (
 
     output wire        array_write_enable,
     output wire        array_clear,
+    output reg         dense_mode,
     output reg  [1:0]  store_row,
     output reg  [1:0]  store_col,
     output reg         store_byte_sel,
@@ -71,6 +74,14 @@ module control (
     wire is_load  = (opcode == LOAD);
     wire is_store = (opcode == STORE);
     wire is_run   = (opcode == RUN) || (counter > 0);
+
+    // Latch the weight format on each RUN; stationary during the wavefront.
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n)
+            dense_mode <= 1'b0;
+        else if (opcode == RUN && counter == 4'd0)
+            dense_mode <= instruction[13];
+    end
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin

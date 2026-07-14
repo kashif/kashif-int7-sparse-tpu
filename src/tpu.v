@@ -17,11 +17,12 @@ module tpu (
     input  wire [15:0]  instruction,
     output wire         ready_to_send,
     output wire [7:0]   result,
-    output wire [107:0] array_data_out
+    output wire [116:0] array_data_out
 );
 
     wire        array_write_enable;
     wire        array_clear;
+    wire        dense_mode;
     wire [1:0]  store_row, store_col;
     wire        store_byte_sel;
 
@@ -48,6 +49,7 @@ module tpu (
         .instruction        (instruction),
         .array_write_enable (array_write_enable),
         .array_clear        (array_clear),
+        .dense_mode         (dense_mode),
         .store_row          (store_row),
         .store_col          (store_col),
         .store_byte_sel     (store_byte_sel),
@@ -93,6 +95,7 @@ module tpu (
         .rst_n    (rst_n),
         .we       (array_write_enable),
         .clr      (array_clear),
+        .dense    (dense_mode),
         .a_in     (array_a_in),
         .b_in     (array_b_in),
         .data_out (array_data_out)
@@ -102,21 +105,21 @@ module tpu (
     // Result readout: STORE latches {row, col, byte_sel}; the selected
     // accumulator byte drives `result` until the next STORE.
     // ------------------------------------------------------------------
-    wire [11:0] acc [0:8];
+    wire [12:0] acc [0:8];
     genvar i;
     generate
         for (i = 0; i < 9; i = i + 1) begin : extract_results
-            assign acc[i] = array_data_out[12*i +: 12];
+            assign acc[i] = array_data_out[13*i +: 13];
         end
     endgenerate
 
     // Index arithmetic in 4 bits — 2-bit operands would wrap modulo 4
     wire [3:0] sel_idx = {2'b0, store_row} * 4'd3 + {2'b0, store_col};
-    wire [11:0] selected = (store_row < 2'd3 && store_col < 2'd3)
+    wire [12:0] selected = (store_row < 2'd3 && store_col < 2'd3)
         ? acc[sel_idx]
-        : 12'd0;
+        : 13'd0;
 
-    assign result = store_byte_sel ? {4'b0, selected[11:8]}
+    assign result = store_byte_sel ? {3'b0, selected[12:8]}
                                    : selected[7:0];
 
 endmodule

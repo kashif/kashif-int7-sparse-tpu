@@ -37,7 +37,7 @@ module tt_um_kashif_int7_sparse_tpu (
 
     wire [15:0]  instruction;
     wire         ready_to_send;
-    wire [107:0] array_data_out;
+    wire [116:0] array_data_out;
     wire         miso;
 
     tpu u_tpu (

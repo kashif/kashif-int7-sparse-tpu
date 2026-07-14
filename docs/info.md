@@ -30,8 +30,11 @@ steps** — 2x throughput per multiplier, and 9 weight bytes encode a
 dense-equivalent **6x3** weight matrix (2x storage and bandwidth).
 
 The design computes `C = A x W` with `A` a 3x6 INT4 activation matrix and `W`
-the 6x3 dense-equivalent weight matrix. Results are exact 12-bit signed values
-(no truncation). Architecture, SPI protocol, and skewed-wavefront control
+the 6x3 dense-equivalent weight matrix. Results are exact 13-bit signed values
+(no truncation). A **native int8 dense mode** (RUN instruction flag) reuses
+the same PEs with each byte as a full int8 weight for one contraction step
+(K=3, half throughput) — so off-the-shelf int8-quantized models map directly,
+per Roune's compatibility recommendation. Architecture, SPI protocol, and skewed-wavefront control
 follow the proven reference mini-TPU
 ([MILOUDIAS/IEEE_ttsky_mini_tpu_spi](https://github.com/MILOUDIAS/IEEE_ttsky_mini_tpu_spi)),
 widened to a 16-bit instruction. Block and dataflow diagrams:
@@ -43,8 +46,8 @@ widened to a 16-bit instruction. Block and dataflow diagrams:
 |-------------|------------------------|-------------|
 | `LOAD A`    | `10 0 rr eee 0000aaaa` | INT4 activation `a` into row `r` (0-2), element `e` (0-5) |
 | `LOAD B`    | `10 1 cc 0ss wwwwwwww` | Int7+1 byte `w` into column `c` (0-2), pair slot `s` (0-2) |
-| `RUN`       | `01 00000000000000`    | Clear accumulators, run the wavefront (7 cycles) |
-| `STORE`     | `11 b rr cc 000000000` | Drive result byte of C[r][c] on `uo_out`: `b`=0 low byte, `b`=1 high nibble |
+| `RUN`       | `01 d 0000000000000`   | Clear accumulators, run the wavefront (7 cycles); `d`=0 Int7+1 sparse (K=6), `d`=1 int8 dense (K=3) |
+| `STORE`     | `11 b rr cc 000000000` | Drive result byte of C[r][c] on `uo_out`: `b`=0 low byte, `b`=1 high 5 bits |
 
 SCLK must be at most clk/6 (the SPI bit counter crosses clock domains
 unsynchronised, as in the reference). The `ready` pin (uio[1]) pulses when a
@@ -92,7 +95,8 @@ MOSI/CS/SCLK and reads the result bytes on `uo_out`.
 | Weight reuse | Yes | No | **Yes** |
 | ReLU | No | Yes | **No** |
 | Tile | 1×1 | 1×1 | **1×2** |
-| Accumulator | 4-bit (mod 16) | 10-bit signed | **12-bit signed (exact)** |
+| Accumulator | 4-bit (mod 16) | 10-bit signed | **13-bit signed (exact)** |
+| Native int8 dense mode | No | No | **Yes (RUN flag, half rate)** |
 | Numerics | Educational INT4 | NVFP4 (Blackwell) | **Int7+1 (Roune's concept)** |
 
 ### Key Innovation: Sparsity for Free
@@ -112,12 +116,22 @@ Unlike NVIDIA's 2:4 structured sparsity (arXiv:2104.08378) which
 requires a separate index, Int7+1 encodes the sparsity pattern in the
 data itself — no extra metadata, no pruning step needed.
 
-### Dense Mode
+### Dense Modes (two of them)
 
 Per Roune: "The dense format would just set the upper 8th bit to zero."
 Setting `select=0` for all weights places values at even positions only
-(k=2j), with odd positions always zero. This gives **dense operation
+(k=2j), with odd positions always zero. This gives **dense int7 operation
 at half throughput** — same as NVIDIA's dense mode for 2:4 sparsity.
+
+Additionally, per Roune's compatibility argument ("many models are quantized
+to int8 and not int7... your customers will have an easier time finding
+off-the-shelf quantized models if you do support int8"), the RUN
+instruction's `d` flag enables **native int8 dense mode**: each weight byte
+is a full int8 value for a single contraction step (K=3), and only even
+activation slots (elements 0, 2, 4) participate. Same PEs, same 7-cycle
+wavefront — sparse Int7+1 gets K=6 in the time int8 dense gets K=3, which
+is exactly the 2x structured-sparsity throughput claim, measurable on one
+chip.
 
 ### Sparsity Applies to Weights, Not Activations
 

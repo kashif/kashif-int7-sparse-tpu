@@ -7,6 +7,7 @@
  * bit counter wraps 15 -> 0; the clk-domain detector turns that wrap
  * into a single-cycle data_ready pulse that presents the instruction
  * to the control unit for exactly one clk cycle (0 = NOP otherwise).
+ * The readback stream is 9 x 13-bit accumulators = 117 bits.
  *
  * Constraint inherited from the reference: SCLK must be much slower
  * than clk (the bit counter crosses into the clk domain unsynchronised;
@@ -23,7 +24,7 @@ module spi (
     input  wire         cs,
     input  wire         sclk,
     input  wire         ready_to_send,
-    input  wire [107:0] data_in,
+    input  wire [116:0] data_in,
 
     output reg          miso,
     output wire [15:0]  data_buffer_output
@@ -68,7 +69,7 @@ module spi (
             bit_counter_prev <= bit_counter;
             if (ready_to_send && !cs)
                 is_sending <= 1'b1;
-            if (is_sending && output_data_bit_counter == 7'd108)
+            if (is_sending && output_data_bit_counter == 7'd117)
                 is_sending <= 1'b0;
             // Pulse data_ready for one clk cycle when the bit counter
             // wraps 15 -> 0 (last instruction bit shifted in).

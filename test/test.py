@@ -44,8 +44,8 @@ def instr_load_b(col, slot, byte):
     return (OP_LOAD << 14) | (1 << 13) | (col << 11) | (slot << 8) | (byte & 0xFF)
 
 
-def instr_run():
-    return OP_RUN << 14
+def instr_run(dense=0):
+    return (OP_RUN << 14) | (dense << 13)
 
 
 def instr_store(row, col, byte_sel):
@@ -80,6 +80,16 @@ def golden_matmul(A, wbytes):
     W = decode_weights(wbytes)
     return [[sum(A[i][k] * W[k][c] for k in range(K)) for c in range(N)]
             for i in range(N)]
+
+
+def golden_dense_int8(A, wbytes):
+    """int8 dense mode: each byte is a full int8 weight for ONE step;
+    only even activation slots (elements 0, 2, 4) participate (K=3).
+    Exact — max |C| = 3 * 128 * 8 = 3072, fits 13-bit signed."""
+    def s8(b):
+        return b - 256 if b & 0x80 else b
+    return [[sum(A[i][2 * j] * s8(wbytes[c][j]) for j in range(K // 2))
+             for c in range(N)] for i in range(N)]
 
 
 # ----------------------------------------------------------------------
@@ -133,15 +143,15 @@ async def read_result(dut, row, col):
     low = int(dut.uo_out.value)
     await spi_send(dut, instr_store(row, col, 1))
     high = int(dut.uo_out.value)
-    val = ((high & 0xF) << 8) | low
-    if val & 0x800:
-        val -= 0x1000
+    val = ((high & 0x1F) << 8) | low        # 13-bit signed accumulator
+    if val & 0x1000:
+        val -= 0x2000
     return val
 
 
-async def run_matmul(dut, A, wbytes):
+async def run_matmul(dut, A, wbytes, dense=0):
     await load_operands(dut, A, wbytes)
-    await spi_send(dut, instr_run())
+    await spi_send(dut, instr_run(dense))
     return [[await read_result(dut, i, c) for c in range(N)] for i in range(N)]
 
 
@@ -296,3 +306,34 @@ async def test_dense_mode(dut):
     dut._log.info(f"dense results: {results}")
     check(dut, results, golden_matmul(A, wbytes), "dense")
     dut._log.info("dense mode test PASSED")
+
+
+@cocotb.test()
+async def test_dense_int8_mode(dut):
+    """Native int8 dense mode (RUN with dense=1): each weight byte is a
+    full int8 for one contraction step (K=3, half throughput), so
+    off-the-shelf int8-quantized models map directly. Odd activation
+    slots must be ignored — they hold garbage here to prove it.
+    """
+    start_clock(dut)
+    await hw_reset(dut)
+
+    # Real activations at even elements 0,2,4; garbage at odd elements
+    A = [[3, -8, -5, 7, 2, -8],
+         [-7, 5, 6, -8, -1, 7],
+         [4, -3, -8, 6, 7, -2]]
+
+    # Full-range int8 weights, including -128 and 127
+    wbytes = [[0x80, 0x7F, 0xFF],   # col 0: -128, 127, -1
+              [0x05, 0xFB, 0x40],   # col 1: 5, -5, 64
+              [0xC0, 0x2A, 0x93]]   # col 2: -64, 42, -109
+
+    results = await run_matmul(dut, A, wbytes, dense=1)
+    dut._log.info(f"int8 dense results: {results}")
+    check(dut, results, golden_dense_int8(A, wbytes), "int8-dense")
+
+    # Same operands in sparse mode must interpret bytes as Int7+1
+    # (mode is latched per RUN, not sticky)
+    results_sparse = await run_matmul(dut, A, wbytes, dense=0)
+    check(dut, results_sparse, golden_matmul(A, wbytes), "back-to-sparse")
+    dut._log.info("int8 dense mode test PASSED")

@@ -56,13 +56,13 @@
         <mxCell id="pd2" value="b_in[7:0] = {select, value[6:0]}" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
           <mxGeometry x="900" y="300" width="240" height="40" as="geometry" />
         </mxCell>
-        <mxCell id="pd3" value="4-bit 2:1 mux&#10;select picks a_even (k=2j) or a_odd (k=2j+1)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1">
+        <mxCell id="pd3" value="4-bit 2:1 mux&#10;sparse: select picks a_even (k=2j) or a_odd (k=2j+1)&#10;dense: always a_even" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1">
           <mxGeometry x="900" y="350" width="240" height="50" as="geometry" />
         </mxCell>
-        <mxCell id="pd4" value="7x4 signed multiplier" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;" vertex="1" parent="1">
+        <mxCell id="pd4" value="8x4 signed multiplier&#10;(Int7 sign-extended / full int8 dense)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;" vertex="1" parent="1">
           <mxGeometry x="900" y="410" width="240" height="40" as="geometry" />
         </mxCell>
-        <mxCell id="pd5" value="12-bit accumulator (exact for K=6)&#10;cleared on RUN" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
+        <mxCell id="pd5" value="13-bit accumulator (exact: sparse K=6, dense K=3)&#10;cleared on RUN" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
           <mxGeometry x="900" y="460" width="240" height="50" as="geometry" />
         </mxCell>
         <mxCell id="pde1" style="edgeStyle=orthogonalEdgeStyle;html=1;" edge="1" parent="1" source="pd1" target="pd3"><mxGeometry relative="1" as="geometry" /></mxCell>

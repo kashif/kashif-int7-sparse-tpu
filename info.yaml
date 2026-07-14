@@ -4,7 +4,7 @@ project:
   title:        "Int7+1 Sparse Mini-TPU"
   author:       "Kashif"
   discord:      ""
-  description:  "3x3 systolic array with Int7+1 weights: 1:2 structured sparsity along the contraction axis, baked into the data format. Each 8-bit weight is a 7-bit value plus a select bit that picks which of two adjacent positions is non-zero — a 4-bit mux replaces a second multiplier, 2 contraction steps per cycle."
+  description:  "3x3 systolic array with Int7+1 weights: 1:2 structured sparsity along the contraction axis, baked into the data format. A 4-bit mux replaces a second multiplier — 2 contraction steps per cycle. Native int8 dense mode at half rate runs off-the-shelf quantized models."
   language:     "Verilog"
   clock_hz:     5000000
 
