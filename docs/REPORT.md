@@ -167,7 +167,7 @@ Key principles from Roune's "Designing AI Chip Software and Hardware" (2026):
 
 ## 7. Known Limitations and Future Improvements
 
-- **No ReLU**: should add sign-bit + enable mux (see cross-pollination doc)
+- **No ReLU**: should add sign-bit + enable mux
 - **No GL X-mitigation**: should add `gl_preheat()` and `_safe_int()`
 - **Fewer random trials**: 12 vs NVFP4's 50 — should increase
 - **No edge-case tests**: zero weights, max accumulation, negative boundaries
@@ -208,4 +208,3 @@ info.yaml                # TT metadata: 1x2 tile, 50MHz, SKY130A
 - [TT HDL Guide](https://tinytapeout.com/hdl/) — FPGA-to-ASIC considerations
 - [TT Tech Specs](https://tinytapeout.com/specs/) — Clock, GPIO, memory constraints
 - [Companion design: NVFP4 Ternary TPU](https://github.com/kashif/kashif-fp4-ternary-tpu)
-- [Cross-pollination analysis](https://github.com/kashif/tinytapeout/blob/main/docs/cross_pollination.md)
