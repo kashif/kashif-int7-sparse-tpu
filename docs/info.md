@@ -70,3 +70,39 @@ and randomized full-coverage trials.
 
 None required. Any SPI-capable host (e.g. the demo board's RP2040) drives
 MOSI/CS/SCLK and reads the result bytes on `uo_out`.
+
+---
+
+## Comparison with Other TT TPU Designs
+
+| Feature | Mini-TPU (IEEE) | NVFP4 Ternary TPU | **This design** |
+|---------|-----------------|-------------------|-----------------|
+| Array | 3×3 = 9 PEs | 4×4 = 16 PEs | **3×3 = 9 PEs** |
+| Weight format | INT4 | E2M1 (NVFP4) | **Int7+1 (7-bit + select)** |
+| Activation | INT4 | Ternary {-1,0,+1} | **INT4 pairs** |
+| Multiplier | 4×4 hardware | None (MUX-add) | **7×4 hardware + 4-bit mux** |
+| Sparsity | None | None | **50% baked in (1:2)** |
+| Computation | Matrix-matrix (GEMM) | Matrix-vector | **True GEMM (K=6)** |
+| PE registers | 3 | 2 | **3** |
+| PE gates | ~200+ | ~74 | **~180-230** |
+| FFs per PE | 12 | 14 | **28** |
+| Effective MACs/cycle | 9 | 16 | **18 (2× sparsity)** |
+| I/O | SPI (12-bit instr) | Direct pin streaming | **SPI (16-bit instr)** |
+| On-chip memory | Yes (weights + acts) | No | **Yes (weights + acts)** |
+| Weight reuse | Yes | No | **Yes** |
+| ReLU | No | Yes | **No** |
+| Tile | 1×1 | 1×1 | **1×2** |
+| Accumulator | 4-bit (mod 16) | 10-bit signed | **12-bit signed (exact)** |
+| Numerics | Educational INT4 | NVFP4 (Blackwell) | **Int7+1 (Roune's concept)** |
+
+### Key Innovation: Sparsity for Free
+
+From Roune's talk ("Numerics: The Unsung Competitive Battleground"):
+
+> "A 7-bit integer multiplier with 1:2 structured sparsity baked in.
+> The 8th bit repurposed to encode which of two adjacent entries is
+> non-zero. You get sparsity for free in the data format."
+
+Unlike NVIDIA's 2:4 structured sparsity (arXiv:2104.08378) which
+requires a separate index, Int7+1 encodes the sparsity pattern in the
+data itself — no extra metadata, no pruning step needed.
