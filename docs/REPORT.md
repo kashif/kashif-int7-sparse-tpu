@@ -201,7 +201,8 @@ info.yaml                # TT metadata: 1x2 tile, 50MHz, SKY130A
 ## 8. References
 
 - [Roune, "Designing AI Chip Software and Hardware" (2026)](https://docs.google.com/document/d/1dZ3vF8GE8_gx6tl52sOaUVEPq0ybmai1xvu3uk89_is/edit) — Section "Structured sparsity for systolic arrays": "I would heavily investigate the possibility of 1:2 sparsity coupled with 7 bit integer arithmetic. This allows a particularly simple and appealing data format: an 8 bit format where the first bit indicates the position of the non-zero entry (out of the next two entries) and the remaining 7 bits are the bits of that integer entry."
-- [NVIDIA 2:4 Structured Sparsity (Mishra et al. 2021, arXiv:2104.08378)](https://arxiv.org/abs/2104.08378)
+- [NVIDIA 2:4 Structured Sparsity in Ampere (blog)](https://developer.nvidia.com/blog/structured-sparsity-in-the-nvidia-ampere-architecture-and-applications-in-search-engines/) — Training recipe: train dense → prune to pattern → retrain with masked weights. Same recipe applies to 1:2.
+- [NVIDIA 2:4 paper (Mishra et al. 2021, arXiv:2104.08378)](https://arxiv.org/abs/2104.08378)
 - [PFW TPU](https://github.com/wangantian/pfw_tpu) — INT8 2×2 systolic, TT SKY26b
 - [Mini-TPU v2](https://github.com/MILOODIAS/IEEE_ttsky_mini_tpu_spi) — INT4 3×3 systolic, TT SKY26b
 - [TT HDL Guide](https://tinytapeout.com/hdl/) — FPGA-to-ASIC considerations
