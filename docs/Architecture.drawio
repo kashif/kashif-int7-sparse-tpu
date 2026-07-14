@@ -1,0 +1,86 @@
+<mxfile host="app.diagrams.net" type="device">
+  <diagram id="arch" name="Architecture">
+    <mxGraphModel dx="1200" dy="800" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1100" pageHeight="700" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+
+        <mxCell id="title" value="Int7+1 Sparse Mini-TPU — Architecture (Tiny Tapeout 1x2 tile)" style="text;html=1;fontSize=18;fontStyle=1;align=center;" vertex="1" parent="1">
+          <mxGeometry x="200" y="20" width="700" height="30" as="geometry" />
+        </mxCell>
+
+        <mxCell id="host" value="SPI Host&#10;(RP2040 / testbench)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;" vertex="1" parent="1">
+          <mxGeometry x="40" y="280" width="130" height="70" as="geometry" />
+        </mxCell>
+
+        <mxCell id="spi" value="SPI slave&#10;16-bit instruction&#10;(LSB-first)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
+          <mxGeometry x="240" y="270" width="140" height="90" as="geometry" />
+        </mxCell>
+
+        <mxCell id="ctrl" value="Control unit&#10;LOAD / RUN / STORE&#10;skewed wavefront counter&#10;(7 cycles per RUN)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
+          <mxGeometry x="450" y="260" width="180" height="110" as="geometry" />
+        </mxCell>
+
+        <mxCell id="mema" value="Memory A (activations)&#10;3 rows x 6 INT4&#10;read as INT4 pairs" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;" vertex="1" parent="1">
+          <mxGeometry x="700" y="120" width="180" height="80" as="geometry" />
+        </mxCell>
+
+        <mxCell id="memb" value="Memory B (weights)&#10;3 cols x 3 Int7+1 bytes&#10;= dense 6x3 matrix" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;" vertex="1" parent="1">
+          <mxGeometry x="700" y="430" width="180" height="80" as="geometry" />
+        </mxCell>
+
+        <mxCell id="array" value="3x3 systolic array&#10;output-stationary&#10;PE: acc += value * (select ? a_odd : a_even)&#10;12-bit exact accumulators" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;" vertex="1" parent="1">
+          <mxGeometry x="700" y="250" width="220" height="130" as="geometry" />
+        </mxCell>
+
+        <mxCell id="mux" value="Result mux&#10;STORE {row, col, byte_sel}&#10;12-bit acc → 2 bytes" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1">
+          <mxGeometry x="700" y="580" width="180" height="80" as="geometry" />
+        </mxCell>
+
+        <mxCell id="uo" value="uo_out[7:0]&#10;result byte" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;" vertex="1" parent="1">
+          <mxGeometry x="960" y="590" width="110" height="60" as="geometry" />
+        </mxCell>
+
+        <mxCell id="e1" value="ui[0] MOSI, ui[1] CS, ui[2] SCLK&#10;uio[0] MISO" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;" edge="1" parent="1" source="host" target="spi">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e2" value="instruction[15:0]&#10;(1-cycle pulse)" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;" edge="1" parent="1" source="spi" target="ctrl">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e3" value="write / skewed read" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;exitX=0.75;exitY=0;" edge="1" parent="1" source="ctrl" target="mema">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e4" value="write / skewed read" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;exitX=0.75;exitY=1;" edge="1" parent="1" source="ctrl" target="memb">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e5" value="a_in: 3 x INT4 pair (24b)" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="mema" target="array">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e6" value="b_in: 3 x Int7+1 byte (24b)" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;exitX=0.5;exitY=0;entryX=0.5;entryY=1;" edge="1" parent="1" source="memb" target="array">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e7" value="we / clr" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;" edge="1" parent="1" source="ctrl" target="array">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e8" value="9 x 12-bit accumulators (108b)" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;exitX=1;exitY=0.75;entryX=1;entryY=0;" edge="1" parent="1" source="array" target="mux">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e9" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;" edge="1" parent="1" source="mux" target="uo">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e10" value="108b acc readback → MISO" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;exitX=0;exitY=0.5;entryX=0.5;entryY=1;dashed=1;" edge="1" parent="1" source="array" target="spi">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e11" value="ready → uio[1]" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;exitX=0.25;exitY=1;dashed=1;" edge="1" parent="1" source="ctrl">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="480" y="660" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+
+        <mxCell id="note" value="Int7+1 weight byte: {select, value[6:0]} — value occupies contraction step k = 2j + select of pair slot j; the other step is zero. 9 bytes ⇒ dense 6x3 weight matrix (2x storage/bandwidth), one mux instead of a second multiplier (2x throughput)." style="text;html=1;whiteSpace=wrap;fontSize=11;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1">
+          <mxGeometry x="40" y="80" width="560" height="70" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

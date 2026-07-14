@@ -1,28 +1,63 @@
-# SPDX-FileCopyrightText: (c) 2024 Tiny Tapeout
+# SPDX-FileCopyrightText: (c) 2026 Kashif
 # SPDX-License-Identifier: Apache-2.0
+#
+# Int7+1 sparse mini-TPU tests.
+#
+# The golden model is an INDEPENDENT dense matrix multiply built from
+# first principles (decode Int7+1 bytes into a dense 6x3 matrix, then
+# plain C = A @ W) — it shares no structure with the RTL, so it cannot
+# "pass artificially" by mirroring implementation quirks.
 
 import os
 import random
 import cocotb
 from cocotb.clock import Clock
-from cocotb.triggers import ClockCycles, RisingEdge
+from cocotb.triggers import ClockCycles
 
 GL_TEST = bool(os.environ.get("GATES") == "yes")
 
-MODE_IDLE    = 0b00
-MODE_LOAD    = 0b01
-MODE_COMPUTE = 0b10
-MODE_OUTPUT  = 0b11
+N = 3      # array is N x N
+K = 6      # contraction depth (K/2 = 3 Int7+1 pair slots)
+
+OP_RUN   = 0b01
+OP_LOAD  = 0b10
+OP_STORE = 0b11
+
+# SPI pin positions within ui_in
+PIN_MOSI = 0
+PIN_CS   = 1
+PIN_SCLK = 2
+
+# SCLK half-period in clk cycles (SCLK = clk/8, well under the clk/6 limit)
+SCLK_HALF = 4
 
 
-def _safe_int(val, default=0):
-    try:
-        return int(val)
-    except (ValueError, TypeError):
-        return default
+# ----------------------------------------------------------------------
+# Instruction encoding (16 bits, sent LSB-first)
+# ----------------------------------------------------------------------
 
+def instr_load_a(row, elem, value):
+    return (OP_LOAD << 14) | (0 << 13) | (row << 11) | (elem << 8) | (value & 0xF)
+
+
+def instr_load_b(col, slot, byte):
+    return (OP_LOAD << 14) | (1 << 13) | (col << 11) | (slot << 8) | (byte & 0xFF)
+
+
+def instr_run():
+    return OP_RUN << 14
+
+
+def instr_store(row, col, byte_sel):
+    return (OP_STORE << 14) | (byte_sel << 13) | (row << 11) | (col << 9)
+
+
+# ----------------------------------------------------------------------
+# Golden model
+# ----------------------------------------------------------------------
 
 def int7p1_decode(byte):
+    """{select, value[6:0]} -> (select, signed value)."""
     select = (byte >> 7) & 1
     value = byte & 0x7F
     if value & 0x40:
@@ -30,232 +65,209 @@ def int7p1_decode(byte):
     return select, value
 
 
-def u4(val):
-    return val & 0xF
+def decode_weights(wbytes):
+    """9 Int7+1 bytes (wbytes[col][slot]) -> dense 6x3 signed matrix."""
+    W = [[0] * N for _ in range(K)]
+    for c in range(N):
+        for j in range(K // 2):
+            sel, val = int7p1_decode(wbytes[c][j])
+            W[2 * j + sel][c] = val
+    return W
 
 
-async def hw_reset(dut, n=10):
-    dut.rst_n.value = 1
+def golden_matmul(A, wbytes):
+    """C = A (3x6 signed INT4) x dense(W) (6x3). Exact — max |C| = 1536."""
+    W = decode_weights(wbytes)
+    return [[sum(A[i][k] * W[k][c] for k in range(K)) for c in range(N)]
+            for i in range(N)]
+
+
+# ----------------------------------------------------------------------
+# SPI driver
+# ----------------------------------------------------------------------
+
+async def spi_send(dut, instr):
+    """Bit-bang one 16-bit instruction, LSB-first, sampled on SCLK rising."""
+    def drive(mosi, cs, sclk):
+        dut.ui_in.value = (mosi << PIN_MOSI) | (cs << PIN_CS) | (sclk << PIN_SCLK)
+
+    drive(0, 0, 0)
+    await ClockCycles(dut.clk, SCLK_HALF)
+    for i in range(16):
+        bit = (instr >> i) & 1
+        drive(bit, 0, 0)                      # setup MOSI while SCLK low
+        await ClockCycles(dut.clk, SCLK_HALF)
+        drive(bit, 0, 1)                      # rising edge samples the bit
+        await ClockCycles(dut.clk, SCLK_HALF)
+    drive(0, 1, 0)                            # CS high between instructions
+    # Leave time for the clk-domain data_ready pulse and execution
+    # (a RUN needs 7 cycles; this gap covers it).
+    await ClockCycles(dut.clk, 12)
+
+
+async def hw_reset(dut):
     dut.ena.value = 1
-    dut.ui_in.value = 0
+    dut.ui_in.value = 1 << PIN_CS   # CS idle high
     dut.uio_in.value = 0
-    for _ in range(2):
-        await RisingEdge(dut.clk)
     dut.rst_n.value = 0
-    for _ in range(n):
-        await RisingEdge(dut.clk)
+    await ClockCycles(dut.clk, 10)
     dut.rst_n.value = 1
-    await RisingEdge(dut.clk)
+    await ClockCycles(dut.clk, 5)
 
 
-async def load_weights(dut, weights):
-    for idx in range(16):
-        row = idx >> 2
-        col = idx & 3
-        dut.ui_in.value = weights[row][col]
-        dut.uio_in.value = (MODE_LOAD << 6) | (idx << 2)
-        await ClockCycles(dut.clk, 1)
+# ----------------------------------------------------------------------
+# High-level operations
+# ----------------------------------------------------------------------
+
+async def load_operands(dut, A, wbytes):
+    for i in range(N):
+        for k in range(K):
+            await spi_send(dut, instr_load_a(i, k, A[i][k]))
+    for c in range(N):
+        for j in range(K // 2):
+            await spi_send(dut, instr_load_b(c, j, wbytes[c][j]))
 
 
-async def compute_block(dut, activations, relu_en=0):
-    """Stream 22 INT4 activation pairs. All 4 columns get activated each cycle.
-    act_a → cols 0,2; act_b → cols 1,3.
-    """
-    for cycle in range(24):
-        if cycle < len(activations):
-            a, b = activations[cycle]
-        else:
-            a, b = 0, 0
-        dut.ui_in.value = (u4(a) << 4) | u4(b)
-        dut.uio_in.value = (MODE_COMPUTE << 6) | relu_en
-        await ClockCycles(dut.clk, 1)
+async def read_result(dut, row, col):
+    await spi_send(dut, instr_store(row, col, 0))
+    low = int(dut.uo_out.value)
+    await spi_send(dut, instr_store(row, col, 1))
+    high = int(dut.uo_out.value)
+    val = ((high & 0xF) << 8) | low
+    if val & 0x800:
+        val -= 0x1000
+    return val
 
 
-async def read_results(dut):
-    results = []
-    dut.uio_in.value = (MODE_OUTPUT << 6)
-    await ClockCycles(dut.clk, 1)
-    for i in range(16):
-        await ClockCycles(dut.clk, 1)
-        high = _safe_int(dut.uo_out.value)
-        await ClockCycles(dut.clk, 1)
-        low = _safe_int(dut.uo_out.value)
-        result = ((high & 0x0F) << 8) | low
-        if result & 0x800:
-            result -= 0x1000
-        results.append(result)
-    return results
+async def run_matmul(dut, A, wbytes):
+    await load_operands(dut, A, wbytes)
+    await spi_send(dut, instr_run())
+    return [[await read_result(dut, i, c) for c in range(N)] for i in range(N)]
 
 
-async def run_full(dut, weights, activations, relu_en=0):
+def check(dut, got, expected, label):
+    for i in range(N):
+        for c in range(N):
+            assert got[i][c] == expected[i][c], (
+                f"{label}: C[{i}][{c}] expected {expected[i][c]}, "
+                f"got {got[i][c]} (full: got={got} expected={expected})")
+
+
+def start_clock(dut):
+    cocotb.start_soon(Clock(dut.clk, 100, unit="ns").start())
+
+
+# ----------------------------------------------------------------------
+# Tests
+# ----------------------------------------------------------------------
+
+@cocotb.test()
+async def test_known_matmul(dut):
+    """Hand-checked matmul: distinct weights and activations."""
+    start_clock(dut)
     await hw_reset(dut)
-    await load_weights(dut, weights)
-    await ClockCycles(dut.clk, 2)
-    await compute_block(dut, activations, relu_en)
-    await ClockCycles(dut.clk, 2)
-    return await read_results(dut)
 
+    # A[i][k] = small distinct values
+    A = [[1, 2, -1, 3, 0, -2],
+         [0, 1, 2, -3, 1, 1],
+         [-1, -1, 2, 2, -4, 3]]
+    # wbytes[col][slot]: mix of select=0 and select=1
+    wbytes = [[0x03, 0x85, 0x02],   # col 0: W[0]=3, W[3]=5, W[4]=2
+              [0xFE, 0x04, 0x81],   # col 1: W[1]=-2, W[2]=4, W[5]=1
+              [0x7F, 0x00, 0xC0]]   # col 2: W[0]=-1, (zero), W[5]=-64
 
-def expected_acc(weight_byte, col, activations):
-    """Expected accumulator for a PE given weight and activation pairs.
-    Col 0 gets act_a, col 1 gets act_b, cols 2,3 get 0 (routing issue).
-    Sparsity: select bit gates which PE in pair is active.
-    """
-    select, value = int7p1_decode(weight_byte)
-    is_odd = col & 1
-    # Cols 2,3 don't get activations in current routing
-    if col >= 2:
-        return 0
-    # Sparsity: only PE with select matching is_odd computes
-    if select != is_odd:
-        return 0
-    act_idx = 'a' if (col == 0) else 'b'
-    acc = 0
-    for a, b in activations[:16]:
-        v = a if act_idx == 'a' else b
-        acc += v * value
-    return acc
+    results = await run_matmul(dut, A, wbytes)
+    dut._log.info(f"results: {results}")
+    check(dut, results, golden_matmul(A, wbytes), "known")
+    dut._log.info("known matmul PASSED")
 
 
 @cocotb.test()
-async def test_basic_sparse_mac(dut):
-    """Test basic MAC with Int7+1 sparsity."""
-    dut._log.info("Start Int7+1 Sparse TPU test")
-    clock = Clock(dut.clk, 10, unit="us")
-    cocotb.start_soon(clock.start())
+async def test_select_bit_semantics(dut):
+    """The select bit must pick position k=2j (0) or k=2j+1 (1)."""
+    start_clock(dut)
+    await hw_reset(dut)
 
-    # select=0 (even active), value=+3
-    weights = [[0x03] * 4 for _ in range(4)]
-    activations = [(1, 1) for _ in range(16)]
+    # Activations distinct at every k so misrouting is visible
+    A = [[1, 2, 3, 4, 5, 6],
+         [7, -8, -7, -6, -5, -4],
+         [-3, -2, -1, 1, 2, 3]]
 
-    results = await run_full(dut, weights, activations)
-    dut._log.info(f"Results: {results}")
-
-    for r in range(4):
-        for c in range(4):
-            expected = expected_acc(weights[r][c], c, activations)
-            assert results[r*4+c] == expected, \
-                f"PE[{r}][{c}]: expected {expected}, got {results[r*4+c]}"
-
-    dut._log.info("Basic sparse MAC test PASSED!")
-
-
-@cocotb.test()
-async def test_odd_select(dut):
-    """Test select=1 (odd partner active)."""
-    dut._log.info("Start odd select test")
-    clock = Clock(dut.clk, 10, unit="us")
-    cocotb.start_soon(clock.start())
-
-    # select=1 (odd active), value=-2 → 0xFE = 0b1_1111110
-    weights = [[0xFE] * 4 for _ in range(4)]
-    activations = [(1, 1) for _ in range(16)]
-
-    results = await run_full(dut, weights, activations)
-    dut._log.info(f"Results: {results}")
-
-    for r in range(4):
-        for c in range(4):
-            expected = expected_acc(weights[r][c], c, activations)
-            assert results[r*4+c] == expected, \
-                f"PE[{r}][{c}]: expected {expected}, got {results[r*4+c]}"
-
-    dut._log.info("Odd select test PASSED!")
+    # Single weight: value 5 in col 0 slot 1 (covers k=2,3)
+    for sel in (0, 1):
+        wbytes = [[0x00, (sel << 7) | 0x05, 0x00],
+                  [0x00, 0x00, 0x00],
+                  [0x00, 0x00, 0x00]]
+        results = await run_matmul(dut, A, wbytes)
+        for i in range(N):
+            expected = 5 * A[i][2 + sel]
+            assert results[i][0] == expected, (
+                f"sel={sel}: C[{i}][0] expected {expected}, got {results[i][0]}")
+            assert results[i][1] == 0 and results[i][2] == 0
+    dut._log.info("select-bit semantics PASSED")
 
 
 @cocotb.test()
-async def test_relu(dut):
-    """Test ReLU with sparse weights."""
-    dut._log.info("Start ReLU test")
-    clock = Clock(dut.clk, 10, unit="us")
-    cocotb.start_soon(clock.start())
+async def test_not_degenerate(dut):
+    """Two activation matrices with identical row sums must give
+    different results — guards against the w*sum(acts) failure mode
+    the previous design had."""
+    start_clock(dut)
+    await hw_reset(dut)
 
-    # Col 0: select=0, value=+2 → 0x02; Col 1: select=1, value=-2 → 0xFE
-    weights = [[0x02, 0xFE, 0x02, 0xFE] for _ in range(4)]
-    activations = [(1, 1) for _ in range(16)]
+    A1 = [[1, 2, 3, 4, 5, 6]] * 3
+    A2 = [[6, 5, 4, 3, 2, 1]] * 3          # same row sums, reversed order
+    wbytes = [[0x01, 0x02, 0x03],           # W[0]=1, W[2]=2, W[4]=3
+              [0x81, 0x82, 0x83],           # W[1]=1, W[3]=2, W[5]=3
+              [0x40, 0x00, 0x00]]           # W[0]=-64
 
-    results = await run_full(dut, weights, activations, relu_en=1)
-    dut._log.info(f"ReLU Results: {results}")
-
-    for r in range(4):
-        for c in range(4):
-            expected = expected_acc(weights[r][c], c, activations)
-            if expected < 0:
-                expected = 0
-            assert results[r*4+c] == expected, \
-                f"PE[{r}][{c}] ReLU: expected {expected}, got {results[r*4+c]}"
-
-    dut._log.info("ReLU test PASSED!")
+    r1 = await run_matmul(dut, A1, wbytes)
+    r2 = await run_matmul(dut, A2, wbytes)
+    check(dut, r1, golden_matmul(A1, wbytes), "A1")
+    check(dut, r2, golden_matmul(A2, wbytes), "A2")
+    assert r1 != r2, ("equal-sum inputs gave identical outputs — "
+                      "design has collapsed to w*sum(acts) again")
+    dut._log.info("non-degeneracy PASSED")
 
 
 @cocotb.test()
-async def test_varied_weights(dut):
-    """Test with different Int7+1 weights per PE."""
-    dut._log.info("Start varied weights test")
-    clock = Clock(dut.clk, 10, unit="us")
-    cocotb.start_soon(clock.start())
+async def test_run_clears_accumulators(dut):
+    """Each RUN starts from zero — results must not double on rerun."""
+    start_clock(dut)
+    await hw_reset(dut)
 
-    weights = [
-        [0x03, 0x85, 0x05, 0x87],
-        [0x7E, 0x01, 0x7C, 0x82],
-        [0x02, 0x84, 0x01, 0x83],
-        [0x7F, 0x00, 0x06, 0x86],
-    ]
-    activations = [(1, 1) for _ in range(16)]
+    A = [[1, 1, 2, 2, 3, 3],
+         [4, 4, 5, 5, 6, 6],
+         [-1, -2, -3, -4, -5, -6]]
+    wbytes = [[0x07, 0x87, 0x07],
+              [0x86, 0x06, 0x86],
+              [0x05, 0x85, 0x05]]
 
-    results = await run_full(dut, weights, activations)
-    dut._log.info(f"Results: {results}")
-
-    for r in range(4):
-        for c in range(4):
-            expected = expected_acc(weights[r][c], c, activations)
-            assert results[r*4+c] == expected, \
-                f"PE[{r}][{c}]: expected {expected}, got {results[r*4+c]}"
-
-    dut._log.info("Varied weights test PASSED!")
-
-
-@cocotb.test()
-async def test_zero_weights(dut):
-    """Zero-weight PEs produce zero output."""
-    dut._log.info("Start zero weights test")
-    clock = Clock(dut.clk, 10, unit="us")
-    cocotb.start_soon(clock.start())
-
-    weights = [[0x00] * 4 for _ in range(4)]
-    activations = [(3, -2) for _ in range(16)]
-
-    results = await run_full(dut, weights, activations)
-    for i in range(16):
-        assert results[i] == 0, f"PE[{i//4}][{i%4}]: expected 0, got {results[i]}"
-
-    dut._log.info("Zero weights test PASSED!")
+    expected = golden_matmul(A, wbytes)
+    await load_operands(dut, A, wbytes)
+    await spi_send(dut, instr_run())
+    await spi_send(dut, instr_run())    # second RUN, same operands
+    results = [[await read_result(dut, i, c) for c in range(N)]
+               for i in range(N)]
+    check(dut, results, expected, "rerun")
+    dut._log.info("accumulator clear PASSED")
 
 
 @cocotb.test()
 async def test_random(dut):
-    """20 random Int7+1 weight + INT4 activation trials."""
-    dut._log.info("Start random test (20 trials)")
-    clock = Clock(dut.clk, 10, unit="us")
-    cocotb.start_soon(clock.start())
+    """Randomized full-coverage trials against the golden model."""
+    start_clock(dut)
+    await hw_reset(dut)
 
-    rng = random.Random(0x5474253)
-    failures = []
+    rng = random.Random(0x1247)
+    trials = 3 if GL_TEST else 12
 
-    for trial in range(20):
-        weights = [[rng.randint(0, 255) for _ in range(4)] for _ in range(4)]
-        activations = [(rng.randint(-7, 7), rng.randint(-7, 7)) for _ in range(16)]
-        results = await run_full(dut, weights, activations)
+    for t in range(trials):
+        A = [[rng.randint(-8, 7) for _ in range(K)] for _ in range(N)]
+        wbytes = [[rng.randint(0, 255) for _ in range(K // 2)]
+                  for _ in range(N)]
+        results = await run_matmul(dut, A, wbytes)
+        check(dut, results, golden_matmul(A, wbytes), f"trial {t}")
+        dut._log.info(f"trial {t} OK")
 
-        for r in range(4):
-            for c in range(4):
-                expected = expected_acc(weights[r][c], c, activations)
-                if results[r*4+c] != expected:
-                    failures.append((trial, r, c, expected, results[r*4+c]))
-
-    if failures:
-        for trial, r, c, exp, act in failures[:10]:
-            dut._log.error(f"trial {trial}: PE[{r}][{c}] expected {exp}, got {act}")
-        assert False, f"{len(failures)} mismatches in 20 random trials"
-
-    dut._log.info("Random test (20 trials) PASSED!")
+    dut._log.info(f"random test PASSED ({trials} trials)")

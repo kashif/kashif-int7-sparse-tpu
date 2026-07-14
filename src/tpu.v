@@ -1,0 +1,122 @@
+/*
+ * Int7+1 sparse mini-TPU core: control + operand memories + 3x3
+ * systolic array + result readout mux.
+ *
+ * Computes C = A x W with A a 3x6 INT4 activation matrix and W a
+ * dense-equivalent 6x3 weight matrix stored as 9 Int7+1 bytes
+ * (1:2 structured sparsity along the contraction axis). Results are
+ * exact 12-bit signed values, read out one byte at a time via STORE.
+ */
+
+`default_nettype none
+
+module tpu (
+    input  wire         clk,
+    input  wire         rst_n,
+
+    input  wire [15:0]  instruction,
+    output wire         ready_to_send,
+    output wire [7:0]   result,
+    output wire [107:0] array_data_out
+);
+
+    wire        array_write_enable;
+    wire        array_clear;
+    wire [1:0]  store_row, store_col;
+    wire        store_byte_sel;
+
+    wire [3:0]  mema_data_in;
+    wire        mema_write_enable;
+    wire [1:0]  mema_write_line;
+    wire [2:0]  mema_write_elem;
+    wire [2:0]  mema_read_enable;
+    wire [5:0]  mema_read_elem;
+
+    wire [7:0]  memb_data_in;
+    wire        memb_write_enable;
+    wire [1:0]  memb_write_line;
+    wire [1:0]  memb_write_elem;
+    wire [2:0]  memb_read_enable;
+    wire [5:0]  memb_read_elem;
+
+    wire [23:0] array_a_in;
+    wire [23:0] array_b_in;
+
+    control control_unit (
+        .clk                (clk),
+        .rst_n              (rst_n),
+        .instruction        (instruction),
+        .array_write_enable (array_write_enable),
+        .array_clear        (array_clear),
+        .store_row          (store_row),
+        .store_col          (store_col),
+        .store_byte_sel     (store_byte_sel),
+        .mema_data_in       (mema_data_in),
+        .mema_write_enable  (mema_write_enable),
+        .mema_write_line    (mema_write_line),
+        .mema_write_elem    (mema_write_elem),
+        .mema_read_enable   (mema_read_enable),
+        .mema_read_elem     (mema_read_elem),
+        .memb_data_in       (memb_data_in),
+        .memb_write_enable  (memb_write_enable),
+        .memb_write_line    (memb_write_line),
+        .memb_write_elem    (memb_write_elem),
+        .memb_read_enable   (memb_read_enable),
+        .memb_read_elem     (memb_read_elem),
+        .ready_to_send      (ready_to_send)
+    );
+
+    memory_a memory_act (
+        .clk          (clk),
+        .write_enable (mema_write_enable),
+        .write_line   (mema_write_line),
+        .write_elem   (mema_write_elem),
+        .data_in      (mema_data_in),
+        .read_enable  (mema_read_enable),
+        .read_pair    (mema_read_elem),
+        .data_out     (array_a_in)
+    );
+
+    memory_b memory_wgt (
+        .clk          (clk),
+        .write_enable (memb_write_enable),
+        .write_line   (memb_write_line),
+        .write_elem   (memb_write_elem),
+        .data_in      (memb_data_in),
+        .read_enable  (memb_read_enable),
+        .read_slot    (memb_read_elem),
+        .data_out     (array_b_in)
+    );
+
+    array array_inst (
+        .clk      (clk),
+        .rst_n    (rst_n),
+        .we       (array_write_enable),
+        .clr      (array_clear),
+        .a_in     (array_a_in),
+        .b_in     (array_b_in),
+        .data_out (array_data_out)
+    );
+
+    // ------------------------------------------------------------------
+    // Result readout: STORE latches {row, col, byte_sel}; the selected
+    // accumulator byte drives `result` until the next STORE.
+    // ------------------------------------------------------------------
+    wire [11:0] acc [0:8];
+    genvar i;
+    generate
+        for (i = 0; i < 9; i = i + 1) begin : extract_results
+            assign acc[i] = array_data_out[12*i +: 12];
+        end
+    endgenerate
+
+    // Index arithmetic in 4 bits — 2-bit operands would wrap modulo 4
+    wire [3:0] sel_idx = {2'b0, store_row} * 4'd3 + {2'b0, store_col};
+    wire [11:0] selected = (store_row < 2'd3 && store_col < 2'd3)
+        ? acc[sel_idx]
+        : 12'd0;
+
+    assign result = store_byte_sel ? {4'b0, selected[11:8]}
+                                   : selected[7:0];
+
+endmodule

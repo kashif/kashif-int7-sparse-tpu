@@ -3,7 +3,7 @@ SIM ?= icarus
 FST ?= -fst
 TOPLEVEL_LANG ?= verilog
 SRC_DIR = $(PWD)/../src
-PROJECT_SOURCES = project.v pe.v systolic_array_4x4.v control_fsm.v
+PROJECT_SOURCES = project.v tpu.v spi.v control.v memory_a.v memory_b.v array.v pe.v
 
 ifneq ($(GATES),yes)
 SIM_BUILD            = sim_build/rtl
