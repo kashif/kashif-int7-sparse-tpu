@@ -8,7 +8,7 @@ A 4x4 weight-stationary systolic array with **1:2 structured sparsity baked into
 
 ## The Core Idea
 
-From Roune's talk ("Numerics: The Unsung Competitive Battleground"):
+From Roune's "Designing AI Chip Software and Hardware" (2026), Section "Structured sparsity for systolic arrays":
 
 > "A 7-bit integer multiplier with 1:2 structured sparsity baked in.
 > The 8th bit that you'd use in a regular int8 is repurposed to encode
@@ -123,8 +123,8 @@ info.yaml                # TT metadata: 1x1 tile, 50MHz, SKY130A
 
 ## References
 
-- [Roune's talk: "Numerics: The Unsung Competitive Battleground"](https://www.youtube.com/watch?v=GlAGtON6BIQ)
-- [NVIDIA 2:4 Structured Sparsity (Mishra et al. 2021)](https://arxiv.org/abs/2104.08378)
+- [Roune, "Designing AI Chip Software and Hardware" (2026)](https://docs.google.com/document/d/1dZ3vF8GE8_gx6tl52sOaUVEPq0ybmai1xvu3uk89_is/edit) — Section "Structured sparsity for systolic arrays" proposes the Int7+1 format: "an 8 bit format where the first bit indicates the position of the non-zero entry (out of the next two entries) and the remaining 7 bits are the bits of that integer entry"
+- [NVIDIA 2:4 Structured Sparsity (Mishra et al. 2021, arXiv:2104.08378)](https://arxiv.org/abs/2104.08378)
 - [PFW TPU](https://github.com/wangantian/pfw_tpu) — INT8 2x2 systolic, TT SKY26b
 - [Mini-TPU v2](https://github.com/MILOUDIAS/IEEE_ttsky_mini_tpu_spi) — INT4 3x3 systolic, TT SKY26b
 - [TT HDL Guide](https://tinytapeout.com/hdl/) — FPGA-to-ASIC considerations

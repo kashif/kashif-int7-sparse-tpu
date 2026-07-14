@@ -97,12 +97,30 @@ MOSI/CS/SCLK and reads the result bytes on `uo_out`.
 
 ### Key Innovation: Sparsity for Free
 
-From Roune's talk ("Numerics: The Unsung Competitive Battleground"):
+From Roune's "Designing AI Chip Software and Hardware" (2026), Section "Structured sparsity for systolic arrays":
 
-> "A 7-bit integer multiplier with 1:2 structured sparsity baked in.
-> The 8th bit repurposed to encode which of two adjacent entries is
-> non-zero. You get sparsity for free in the data format."
+> "I would heavily investigate the possibility of 1:2 sparsity coupled
+> with 7 bit integer arithmetic. This allows a particularly simple and
+> appealing data format: an 8 bit format where the first bit indicates
+> the position of the non-zero entry (out of the next two entries) and
+> the remaining 7 bits are the bits of that integer entry."
+
+> "I think this simple Int7+1 sparse format could, potentially, be the
+> end-state for AI inference numerics for many years to come."
 
 Unlike NVIDIA's 2:4 structured sparsity (arXiv:2104.08378) which
 requires a separate index, Int7+1 encodes the sparsity pattern in the
 data itself — no extra metadata, no pruning step needed.
+
+### Dense Mode
+
+Per Roune: "The dense format would just set the upper 8th bit to zero."
+Setting `select=0` for all weights places values at even positions only
+(k=2j), with odd positions always zero. This gives **dense operation
+at half throughput** — same as NVIDIA's dense mode for 2:4 sparsity.
+
+### Sparsity Applies to Weights, Not Activations
+
+Per Roune: "sparsity works well for weights, it is much less attractive
+for activations." Our design correctly applies sparsity only to weights
+(the select bit is in the weight byte). Activations are always dense INT4.

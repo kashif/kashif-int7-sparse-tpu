@@ -126,7 +126,46 @@ Per [tinytapeout.com/hdl/important/](https://tinytapeout.com/hdl/important/):
 - ✅ `default_nettype none`
 - ✅ No `config.tcl` modifications
 
-## 6. Known Limitations and Future Improvements
+## 6. Design Rationale (from Roune's document)
+
+Key principles from Roune's "Designing AI Chip Software and Hardware" (2026):
+
+- **Int7+1 format proposed by Roune himself** (Structured sparsity section):
+  "I would heavily investigate the possibility of 1:2 sparsity coupled with
+  7 bit integer arithmetic. This allows a particularly simple and appealing
+  data format: an 8 bit format where the first bit indicates the position of
+  the non-zero entry (out of the next two entries) and the remaining 7 bits
+  are the bits of that integer entry."
+
+- **"This simple Int7+1 sparse format could, potentially, be the end-state
+  for AI inference numerics for many years to come"** (Structured sparsity
+  section): Strong validation of the design direction.
+
+- **Dense mode** (Structured sparsity section): "The dense format would just
+  set the upper 8th bit to zero." Our design supports this — setting
+  `select=0` for all weights gives dense operation at half throughput. Roune
+  also suggests optionally supporting INT8 for dense: "you might choose to
+  support int8 for the dense format" since "int7 can do pretty much any model
+  int8 can, if quantization is done properly."
+
+- **Sparsity for weights only** (Structured sparsity section): "sparsity works
+  well for weights, it is much less attractive for activations." Our design
+  correctly applies the select bit only to weights; activations are always
+  dense INT4.
+
+- **"8 bits is always sufficient for inference"** (Numerics section): Our
+  7-bit weights + 4-bit activations are well within the sufficient range.
+
+- **Parametrize vector width** (Mono-sized arrays section): "parametrize also
+  your hardware design on the vector width... Testing and debugging a 2-wide
+  chip is easier than debugging a 256-wide chip." Our array uses `N=3` as a
+  constant — could be parametrized for FPGA testing at smaller sizes.
+
+- **"Not all systolic arrays are made equal"** (Numerics section): The 1:2
+  sparsity gives 2× throughput per multiplier — "a big decrease in
+  power-per-operation" with "only a very modest increase in chip area."
+
+## 7. Known Limitations and Future Improvements
 
 - **No ReLU**: should add sign-bit + enable mux (see cross-pollination doc)
 - **No GL X-mitigation**: should add `gl_preheat()` and `_safe_int()`
@@ -161,7 +200,7 @@ info.yaml                # TT metadata: 1x2 tile, 50MHz, SKY130A
 
 ## 8. References
 
-- [Roune's talk: "Numerics: The Unsung Competitive Battleground"](https://www.youtube.com/watch?v=GlAGtON6BIQ)
+- [Roune, "Designing AI Chip Software and Hardware" (2026)](https://docs.google.com/document/d/1dZ3vF8GE8_gx6tl52sOaUVEPq0ybmai1xvu3uk89_is/edit) — Section "Structured sparsity for systolic arrays": "I would heavily investigate the possibility of 1:2 sparsity coupled with 7 bit integer arithmetic. This allows a particularly simple and appealing data format: an 8 bit format where the first bit indicates the position of the non-zero entry (out of the next two entries) and the remaining 7 bits are the bits of that integer entry."
 - [NVIDIA 2:4 Structured Sparsity (Mishra et al. 2021, arXiv:2104.08378)](https://arxiv.org/abs/2104.08378)
 - [PFW TPU](https://github.com/wangantian/pfw_tpu) — INT8 2×2 systolic, TT SKY26b
 - [Mini-TPU v2](https://github.com/MILOODIAS/IEEE_ttsky_mini_tpu_spi) — INT4 3×3 systolic, TT SKY26b
