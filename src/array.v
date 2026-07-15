@@ -6,7 +6,7 @@
  *   - horizontal pipes carry an INT4 *pair* (8 bits) — two contraction
  *     steps per cycle
  *   - vertical pipes carry Int7+1 weight bytes (8 bits)
- *   - 12-bit accumulators (exact for K=6, no truncation)
+ *   - 14-bit accumulators (exact for K=8, no truncation)
  *   - clr input zeroes all accumulators at the start of a RUN
  */
 
@@ -21,13 +21,13 @@ module array (
 
     input  wire [23:0]  a_in,     // 3 rows x activation pair
     input  wire [23:0]  b_in,     // 3 cols x weight byte
-    output wire [116:0] data_out  // 9 accumulators x 13 bits, row-major
+    output wire [125:0] data_out  // 9 accumulators x 14 bits, row-major
 );
 
     // a_pipe[row][col]: pair flowing right; b_pipe[row][col]: byte flowing down
     wire [7:0]  a_pipe [0:2][0:3];
     wire [7:0]  b_pipe [0:3][0:2];
-    wire [12:0] c_bus  [0:2][0:2];
+    wire [13:0] c_bus  [0:2][0:2];
 
     genvar row, col;
     generate
@@ -61,7 +61,7 @@ module array (
     generate
         for (row = 0; row < 3; row = row + 1) begin : flat_row
             for (col = 0; col < 3; col = col + 1) begin : flat_col
-                assign data_out[13*(row*3+col) +: 13] = c_bus[row][col];
+                assign data_out[14*(row*3+col) +: 14] = c_bus[row][col];
             end
         end
     endgenerate

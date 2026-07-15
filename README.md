@@ -39,8 +39,8 @@ acc += value * (select ? a_odd : a_even)
 ```
 
 **A mux replaces a second multiplier.** Every cycle advances two contraction
-steps: 2x throughput per multiplier, 2x weight storage/bandwidth (9 bytes
-encode a dense-equivalent 6x3 matrix), zero sparsity metadata — unlike 2:4,
+steps: 2x throughput per multiplier, 2x weight storage/bandwidth (12 bytes
+encode a dense-equivalent 8x3 matrix), zero sparsity metadata — unlike 2:4,
 which needs a separate index.
 
 ### Two dense modes
@@ -48,7 +48,7 @@ which needs a separate index.
 - **Int7 dense**: set all select bits to 0 (Roune: "the dense format would
   just set the upper 8th bit to zero") — half throughput.
 - **Native int8 dense** (RUN flag): each byte is a full int8 weight for one
-  contraction step (K=3). Same PEs, same 7-cycle wavefront — the sparse/dense
+  contraction step (K=4). Same PEs, same 8-cycle wavefront — the sparse/dense
   2x throughput gap is measurable on one chip.
 
 ## Architecture
@@ -56,8 +56,9 @@ which needs a separate index.
 Output-stationary systolic array following the silicon-proven
 [Mini-TPU v2](https://github.com/MILOUDIAS/IEEE_ttsky_mini_tpu_spi):
 activation pairs flow right, Int7+1 weight bytes flow down, results
-accumulate in place. Computes `C = A(3x6 INT4) x W(6x3)` exactly in 13-bit
-accumulators, in a 7-cycle skewed wavefront.
+accumulate in place. Computes `C = A(3x8 INT4) x W(8x3)` exactly in 14-bit
+accumulators, in an 8-cycle skewed wavefront. K=8 (sparse) tiles the
+power-of-two layer widths of real models with no padding.
 
 ```
             W col 0    W col 1    W col 2      (Int7+1 bytes, skewed)
@@ -73,10 +74,10 @@ A row 2 --> [PE 20] -> [PE 21] -> [PE 22]
 
 | Instruction | Format (binary)        | Description |
 |-------------|------------------------|-------------|
-| `LOAD A`    | `10 0 rr eee 0000aaaa` | INT4 activation into row `r` (0-2), element `e` (0-5) |
-| `LOAD B`    | `10 1 cc 0ss wwwwwwww` | Weight byte into column `c` (0-2), pair slot `s` (0-2) |
-| `RUN`       | `01 d 0000000000000`   | Clear accumulators, run 7 cycles; `d`=1 selects int8 dense |
-| `STORE`     | `11 b rr cc 000000000` | Result byte of C[r][c] on `uo_out` (`b`: low byte / high 5 bits) |
+| `LOAD A`    | `10 0 rr eee 0000aaaa` | INT4 activation into row `r` (0-2), element `e` (0-7) |
+| `LOAD B`    | `10 1 cc 0ss wwwwwwww` | Weight byte into column `c` (0-2), pair slot `s` (0-3) |
+| `RUN`       | `01 d 0000000000000`   | Clear accumulators, run 8 cycles; `d`=1 selects int8 dense |
+| `STORE`     | `11 b rr cc 000000000` | Result byte of C[r][c] on `uo_out` (`b`: low byte / high 6 bits) |
 
 Pins: `ui[0]`=MOSI, `ui[1]`=CS, `ui[2]`=SCLK; `uo_out`=result byte;
 `uio[0]`=MISO, `uio[1]`=ready.
@@ -87,11 +88,11 @@ Pins: `ui[0]`=MOSI, `ui[1]`=CS, `ui[2]`=SCLK; `uo_out`=result byte;
 src/
   project.v     # Top-level TT module (tt_um_kashif_int7_sparse_tpu)
   tpu.v         # Core: control + memories + array + result mux
-  spi.v         # SPI slave, 16-bit instructions, 117-bit readback
+  spi.v         # SPI slave, 16-bit instructions, 126-bit readback
   control.v     # LOAD/RUN/STORE decode, skewed wavefront counter
-  memory_a.v    # Activations: 3 rows x 6 INT4, read as pairs
-  memory_b.v    # Weights: 3 cols x 3 Int7+1 bytes (= dense 6x3)
-  array.v       # 3x3 systolic array, 13-bit accumulators
+  memory_a.v    # Activations: 3 rows x 8 INT4, read as pairs
+  memory_b.v    # Weights: 3 cols x 4 Int7+1 bytes (= dense 8x3)
+  array.v       # 3x3 systolic array, 14-bit accumulators
   pe.v          # Int7+1 sparse / int8 dense MAC
 test/
   tb.v          # Verilog testbench (GL_TEST compatible)
@@ -116,8 +117,8 @@ matmul — shares no structure with the RTL):
 | `test_dense_mode` | Int7 dense via select=0 (Roune's dense format) |
 | `test_dense_int8_mode` | Native int8 dense incl. -128/127, garbage in ignored slots, mode switching |
 
-CI: RTL tests, GDS build (58.7% utilization on 2x2), TT precheck, and
-gate-level test all green.
+CI: RTL tests, GDS build, TT precheck, and gate-level test all green
+(K=6 baseline measured 58.7% utilization on 2x2; K=8 adds ~57 flops).
 
 ## ASIC Notes (per TT HDL guide + reference REPORT lessons)
 
@@ -125,7 +126,7 @@ gate-level test all green.
   pipeline registers
 - `(* keep *)` FFs drive `uio_oe`/`uio_out` — avoids conb/VGND LVS merges
 - Fixed uio directions; host-driven pins never output-enabled
-- 13-bit accumulators: exact for both modes (sparse max 1536, dense max 3072)
+- 14-bit accumulators: exact for both modes (sparse max 2048, dense max 4096)
 - `default_nettype none`, no `initial` blocks, `_unused` wire
 
 ## Target

@@ -4,7 +4,7 @@
 # Int7+1 sparse mini-TPU tests.
 #
 # The golden model is an INDEPENDENT dense matrix multiply built from
-# first principles (decode Int7+1 bytes into a dense 6x3 matrix, then
+# first principles (decode Int7+1 bytes into a dense 8x3 matrix, then
 # plain C = A @ W) — it shares no structure with the RTL, so it cannot
 # "pass artificially" by mirroring implementation quirks.
 
@@ -17,7 +17,7 @@ from cocotb.triggers import ClockCycles
 GL_TEST = bool(os.environ.get("GATES") == "yes")
 
 N = 3      # array is N x N
-K = 6      # contraction depth (K/2 = 3 Int7+1 pair slots)
+K = 8      # contraction depth (K/2 = 4 Int7+1 pair slots)
 
 OP_RUN   = 0b01
 OP_LOAD  = 0b10
@@ -66,7 +66,7 @@ def int7p1_decode(byte):
 
 
 def decode_weights(wbytes):
-    """9 Int7+1 bytes (wbytes[col][slot]) -> dense 6x3 signed matrix."""
+    """12 Int7+1 bytes (wbytes[col][slot]) -> dense 8x3 signed matrix."""
     W = [[0] * N for _ in range(K)]
     for c in range(N):
         for j in range(K // 2):
@@ -76,7 +76,7 @@ def decode_weights(wbytes):
 
 
 def golden_matmul(A, wbytes):
-    """C = A (3x6 signed INT4) x dense(W) (6x3). Exact — max |C| = 1536."""
+    """C = A (3x8 signed INT4) x dense(W) (8x3). Exact — max |C| = 2048."""
     W = decode_weights(wbytes)
     return [[sum(A[i][k] * W[k][c] for k in range(K)) for c in range(N)]
             for i in range(N)]
@@ -84,8 +84,8 @@ def golden_matmul(A, wbytes):
 
 def golden_dense_int8(A, wbytes):
     """int8 dense mode: each byte is a full int8 weight for ONE step;
-    only even activation slots (elements 0, 2, 4) participate (K=3).
-    Exact — max |C| = 3 * 128 * 8 = 3072, fits 13-bit signed."""
+    only even activation slots (elements 0, 2, 4, 6) participate (K=4).
+    Exact — max |C| = 4 * 128 * 8 = 4096, fits 14-bit signed."""
     def s8(b):
         return b - 256 if b & 0x80 else b
     return [[sum(A[i][2 * j] * s8(wbytes[c][j]) for j in range(K // 2))
@@ -111,7 +111,7 @@ async def spi_send(dut, instr):
         await ClockCycles(dut.clk, SCLK_HALF)
     drive(0, 1, 0)                            # CS high between instructions
     # Leave time for the clk-domain data_ready pulse and execution
-    # (a RUN needs 7 cycles; this gap covers it).
+    # (a RUN needs 8 cycles; this gap covers it).
     await ClockCycles(dut.clk, 12)
 
 
@@ -143,9 +143,9 @@ async def read_result(dut, row, col):
     low = int(dut.uo_out.value)
     await spi_send(dut, instr_store(row, col, 1))
     high = int(dut.uo_out.value)
-    val = ((high & 0x1F) << 8) | low        # 13-bit signed accumulator
-    if val & 0x1000:
-        val -= 0x2000
+    val = ((high & 0x3F) << 8) | low        # 14-bit signed accumulator
+    if val & 0x2000:
+        val -= 0x4000
     return val
 
 
@@ -178,13 +178,13 @@ async def test_known_matmul(dut):
     await hw_reset(dut)
 
     # A[i][k] = small distinct values
-    A = [[1, 2, -1, 3, 0, -2],
-         [0, 1, 2, -3, 1, 1],
-         [-1, -1, 2, 2, -4, 3]]
+    A = [[1, 2, -1, 3, 0, -2, 4, -5],
+         [0, 1, 2, -3, 1, 1, -8, 7],
+         [-1, -1, 2, 2, -4, 3, 5, -6]]
     # wbytes[col][slot]: mix of select=0 and select=1
-    wbytes = [[0x03, 0x85, 0x02],   # col 0: W[0]=3, W[3]=5, W[4]=2
-              [0xFE, 0x04, 0x81],   # col 1: W[1]=-2, W[2]=4, W[5]=1
-              [0x7F, 0x00, 0xC0]]   # col 2: W[0]=-1, (zero), W[5]=-64
+    wbytes = [[0x03, 0x85, 0x02, 0x8A],  # col 0: W[0]=3, W[3]=5, W[4]=2, W[7]=10
+              [0xFE, 0x04, 0x81, 0x1B],  # col 1: W[1]=-2, W[2]=4, W[5]=1, W[6]=27
+              [0x7F, 0x00, 0xC0, 0xB3]]  # col 2: W[0]=-1, (zero), W[5]=-64, W[7]=-77
 
     results = await run_matmul(dut, A, wbytes)
     dut._log.info(f"results: {results}")
@@ -199,15 +199,15 @@ async def test_select_bit_semantics(dut):
     await hw_reset(dut)
 
     # Activations distinct at every k so misrouting is visible
-    A = [[1, 2, 3, 4, 5, 6],
-         [7, -8, -7, -6, -5, -4],
-         [-3, -2, -1, 1, 2, 3]]
+    A = [[1, 2, 3, 4, 5, 6, 7, -8],
+         [7, -8, -7, -6, -5, -4, -3, -2],
+         [-3, -2, -1, 1, 2, 3, 4, 5]]
 
     # Single weight: value 5 in col 0 slot 1 (covers k=2,3)
     for sel in (0, 1):
-        wbytes = [[0x00, (sel << 7) | 0x05, 0x00],
-                  [0x00, 0x00, 0x00],
-                  [0x00, 0x00, 0x00]]
+        wbytes = [[0x00, (sel << 7) | 0x05, 0x00, 0x00],
+                  [0x00, 0x00, 0x00, 0x00],
+                  [0x00, 0x00, 0x00, 0x00]]
         results = await run_matmul(dut, A, wbytes)
         for i in range(N):
             expected = 5 * A[i][2 + sel]
@@ -225,11 +225,11 @@ async def test_not_degenerate(dut):
     start_clock(dut)
     await hw_reset(dut)
 
-    A1 = [[1, 2, 3, 4, 5, 6]] * 3
-    A2 = [[6, 5, 4, 3, 2, 1]] * 3          # same row sums, reversed order
-    wbytes = [[0x01, 0x02, 0x03],           # W[0]=1, W[2]=2, W[4]=3
-              [0x81, 0x82, 0x83],           # W[1]=1, W[3]=2, W[5]=3
-              [0x40, 0x00, 0x00]]           # W[0]=-64
+    A1 = [[1, 2, 3, 4, 5, 6, 7, -8]] * 3
+    A2 = [[-8, 7, 6, 5, 4, 3, 2, 1]] * 3    # same row sums, reversed order
+    wbytes = [[0x01, 0x02, 0x03, 0x04],     # W[0]=1, W[2]=2, W[4]=3, W[6]=4
+              [0x81, 0x82, 0x83, 0x84],     # W[1]=1, W[3]=2, W[5]=3, W[7]=4
+              [0x40, 0x00, 0x00, 0x00]]     # W[0]=-64
 
     r1 = await run_matmul(dut, A1, wbytes)
     r2 = await run_matmul(dut, A2, wbytes)
@@ -246,12 +246,12 @@ async def test_run_clears_accumulators(dut):
     start_clock(dut)
     await hw_reset(dut)
 
-    A = [[1, 1, 2, 2, 3, 3],
-         [4, 4, 5, 5, 6, 6],
-         [-1, -2, -3, -4, -5, -6]]
-    wbytes = [[0x07, 0x87, 0x07],
-              [0x86, 0x06, 0x86],
-              [0x05, 0x85, 0x05]]
+    A = [[1, 1, 2, 2, 3, 3, 4, 4],
+         [4, 4, 5, 5, 6, 6, 7, 7],
+         [-1, -2, -3, -4, -5, -6, -7, -8]]
+    wbytes = [[0x07, 0x87, 0x07, 0x87],
+              [0x86, 0x06, 0x86, 0x06],
+              [0x05, 0x85, 0x05, 0x85]]
 
     expected = golden_matmul(A, wbytes)
     await load_operands(dut, A, wbytes)
@@ -293,14 +293,14 @@ async def test_dense_mode(dut):
     start_clock(dut)
     await hw_reset(dut)
 
-    A = [[1, 2, 3, 4, 5, 6],
-         [-1, -2, -3, -4, -5, -6],
-         [7, -8, 7, -8, 7, -8]]
+    A = [[1, 2, 3, 4, 5, 6, 7, 8],
+         [-1, -2, -3, -4, -5, -6, -7, -8],
+         [7, -8, 7, -8, 7, -8, 7, -8]]
 
-    # All select=0: only k=0,2,4 get values; k=1,3,5 are always zero
-    wbytes = [[0x03, 0x05, 0x07],   # col 0: W[0]=3, W[2]=5, W[4]=7
-              [0x7E, 0x7C, 0x7A],   # col 1: W[0]=-2, W[2]=-4, W[4]=-6
-              [0x01, 0x02, 0x03]]   # col 2: W[0]=1, W[2]=2, W[4]=3
+    # All select=0: only k=0,2,4,6 get values; k=1,3,5,7 are always zero
+    wbytes = [[0x03, 0x05, 0x07, 0x09],  # col 0: W[0]=3, W[2]=5, W[4]=7, W[6]=9
+              [0x7E, 0x7C, 0x7A, 0x78],  # col 1: W[0]=-2, W[2]=-4, W[4]=-6, W[6]=-8
+              [0x01, 0x02, 0x03, 0x04]]  # col 2: W[0]=1, W[2]=2, W[4]=3, W[6]=4
 
     results = await run_matmul(dut, A, wbytes)
     dut._log.info(f"dense results: {results}")
@@ -311,22 +311,22 @@ async def test_dense_mode(dut):
 @cocotb.test()
 async def test_dense_int8_mode(dut):
     """Native int8 dense mode (RUN with dense=1): each weight byte is a
-    full int8 for one contraction step (K=3, half throughput), so
+    full int8 for one contraction step (K=4, half throughput), so
     off-the-shelf int8-quantized models map directly. Odd activation
     slots must be ignored — they hold garbage here to prove it.
     """
     start_clock(dut)
     await hw_reset(dut)
 
-    # Real activations at even elements 0,2,4; garbage at odd elements
-    A = [[3, -8, -5, 7, 2, -8],
-         [-7, 5, 6, -8, -1, 7],
-         [4, -3, -8, 6, 7, -2]]
+    # Real activations at even elements 0,2,4,6; garbage at odd elements
+    A = [[3, -8, -5, 7, 2, -8, 6, 1],
+         [-7, 5, 6, -8, -1, 7, -8, -8],
+         [4, -3, -8, 6, 7, -2, 5, 3]]
 
     # Full-range int8 weights, including -128 and 127
-    wbytes = [[0x80, 0x7F, 0xFF],   # col 0: -128, 127, -1
-              [0x05, 0xFB, 0x40],   # col 1: 5, -5, 64
-              [0xC0, 0x2A, 0x93]]   # col 2: -64, 42, -109
+    wbytes = [[0x80, 0x7F, 0xFF, 0x80],  # col 0: -128, 127, -1, -128
+              [0x05, 0xFB, 0x40, 0x7F],  # col 1: 5, -5, 64, 127
+              [0xC0, 0x2A, 0x93, 0xE5]]  # col 2: -64, 42, -109, -27
 
     results = await run_matmul(dut, A, wbytes, dense=1)
     dut._log.info(f"int8 dense results: {results}")
