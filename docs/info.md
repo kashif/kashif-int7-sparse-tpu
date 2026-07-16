@@ -134,6 +134,27 @@ wavefront — sparse Int7+1 gets K=8 in the time int8 dense gets K=4, which
 is exactly the 2x structured-sparsity throughput claim, measurable on one
 chip.
 
+### Element-Exact MXFP6 (E2M3) Compatibility
+
+Every MXFP6 E2M3 element converts exactly to a 7-bit signed integer in the
+x8 integer domain, so E2M3-quantized weights run natively on this chip —
+through the 1:2-sparse path (after 1:2 pruning) or the int8 dense path —
+with the E8M0 per-32-element block scales applied by the host to the exact
+partial sums:
+
+| E2M3 field pattern | Value | x8 integer |
+|--------------------|-------|------------|
+| E=0 (subnormal), M=1..7 | M/8 | 1..7 |
+| E=1, M=0..7 | (8+M)/8 | 8..15 |
+| E=2, M=0..7 | (8+M)/4 | 16..30 (even) |
+| E=3, M=0..7 | (8+M)/2 | 32..60 (step 4) |
+
+Max magnitude is 60 (< 64), the sign bit negates, and products stay within
+the accumulator bounds (|w| <= 60 is stricter than the int8 dense bound).
+This is the fixed-point pre-alignment used by FPGA tensor blocks for MXFP
+(arXiv:2607.13898): E2M1 needs 5 signed bits, E2M3 exactly 7 — Int7 is the
+natural container for the accuracy-preferred MXFP6 variant.
+
 ### Sparsity Applies to Weights, Not Activations
 
 Per Roune: "sparsity works well for weights, it is much less attractive

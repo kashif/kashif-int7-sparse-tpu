@@ -51,6 +51,19 @@ which needs a separate index.
   contraction step (K=4). Same PEs, same 8-cycle wavefront — the sparse/dense
   2x throughput gap is measurable on one chip.
 
+### Bonus: element-exact MXFP6 (E2M3)
+
+Every MXFP6 E2M3 value maps exactly onto a 7-bit signed integer in the x8
+domain (subnormals 1-7, then 8+M scaled by 2^(E-1); max |60| < 64), so the
+chip runs **MXFP6 (E2M3) weights natively** — the accuracy-preferred MXFP6
+variant. The host converts E2M3 nibbles+sign to Int7 values, feeds them
+through either the 1:2-sparse or int8-dense path, and applies the E8M0
+per-32 block scales to the exact partial sums during dequantization (as the
+companion FP4 chips do for NVFP4/MXFP4). This is the same fixed-point
+pre-alignment used by FPGA tensor blocks for MXFP
+([arXiv:2607.13898](https://arxiv.org/abs/2607.13898)): E2M1 fits 5 signed
+bits, E2M3 fits exactly 7 — the Int7 container.
+
 ## Architecture
 
 Output-stationary systolic array following the silicon-proven
@@ -139,6 +152,7 @@ CI: RTL tests, GDS build, TT precheck, and gate-level test all green
 
 - [Roune, "Designing AI Chip Software and Hardware" (2026)](https://docs.google.com/document/d/1dZ3vF8GE8_gx6tl52sOaUVEPq0ybmai1xvu3uk89_is/edit) — Section "Structured sparsity for systolic arrays"
 - [NVIDIA 2:4 Structured Sparsity in Ampere (blog)](https://developer.nvidia.com/blog/structured-sparsity-in-the-nvidia-ampere-architecture-and-applications-in-search-engines/) — 2:4 needs a separate index; Int7+1's select bit IS the index
+- [Jack of All Scales: A Versatile FPGA Tensor Block for MXFP Precisions (arXiv:2607.13898)](https://arxiv.org/abs/2607.13898) — MXFP-to-fixed-point pre-alignment; E2M3 -> 7 signed bits (the MXFP6 compatibility above)
 - [Mini-TPU v2](https://github.com/MILOUDIAS/IEEE_ttsky_mini_tpu_spi) — INT4 3x3 systolic, TT SKY26b; architecture and SPI protocol base
 - [PFW TPU](https://github.com/wangantian/pfw_tpu) — INT8 2x2 systolic, TT SKY26b
 - [TT HDL Guide](https://tinytapeout.com/hdl/) / [TT Tech Specs](https://tinytapeout.com/specs/)

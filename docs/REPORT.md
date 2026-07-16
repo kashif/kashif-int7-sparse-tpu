@@ -163,6 +163,12 @@ Key principles from Roune's "Designing AI Chip Software and Hardware" (2026):
 - **"8 bits is always sufficient for inference"** (Numerics section): Our
   7-bit weights + 4-bit activations are well within the sufficient range.
 
+- **Element-exact MXFP6 (E2M3) for free**: E2M3 values map exactly to 7-bit
+  signed integers in the x8 domain (max |60| < 64) — the same fixed-point
+  pre-alignment FPGA tensor blocks use for MXFP (arXiv:2607.13898). The host
+  converts E2M3 weights to Int7 values and applies E8M0 block scales to the
+  exact partial sums; no RTL involvement.
+
 - **Parametrize vector width** (Mono-sized arrays section): "parametrize also
   your hardware design on the vector width... Testing and debugging a 2-wide
   chip is easier than debugging a 256-wide chip." Our array uses `N=3` as a
