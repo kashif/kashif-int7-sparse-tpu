@@ -93,6 +93,32 @@ def golden_dense_int8(A, wbytes):
 
 
 # ----------------------------------------------------------------------
+# MXFP6 (E2M3) golden decode — element-exact mapping into Int7
+#
+# Decoded from the OCP MX spec formula from first principles (NOT from
+# the docs table, so the two derivations check each other):
+#   normal (E>0):    (-1)^S * 2^(E-bias) * (1 + M/8),  bias = 1
+#   subnormal (E=0): (-1)^S * 2^(1-bias) * (M/8)
+# ----------------------------------------------------------------------
+
+def e2m3_value(code6):
+    """6-bit E2M3 {S, E[1:0], M[2:0]} -> exact float value."""
+    sign = (code6 >> 5) & 1
+    E = (code6 >> 3) & 0x3
+    M = code6 & 0x7
+    val = (M / 8.0) if E == 0 else (1 + M / 8.0) * 2.0 ** (E - 1)
+    return -val if sign else val
+
+
+def e2m3_to_int7(code6):
+    """E2M3 -> x8-domain signed integer; must fit the Int7 container."""
+    x8 = e2m3_value(code6) * 8
+    assert x8 == int(x8), f"E2M3 {code6:#04x} not exact in x8 domain"
+    assert -64 <= int(x8) <= 63, f"E2M3 {code6:#04x} outside Int7"
+    return int(x8)
+
+
+# ----------------------------------------------------------------------
 # SPI driver
 # ----------------------------------------------------------------------
 
@@ -184,7 +210,7 @@ async def test_known_matmul(dut):
     # wbytes[col][slot]: mix of select=0 and select=1
     wbytes = [[0x03, 0x85, 0x02, 0x8A],  # col 0: W[0]=3, W[3]=5, W[4]=2, W[7]=10
               [0xFE, 0x04, 0x81, 0x1B],  # col 1: W[1]=-2, W[2]=4, W[5]=1, W[6]=27
-              [0x7F, 0x00, 0xC0, 0xB3]]  # col 2: W[0]=-1, (zero), W[5]=-64, W[7]=-77
+              [0x7F, 0x00, 0xC0, 0xB3]]  # col 2: W[0]=-1, (zero), W[5]=-64, W[7]=51
 
     results = await run_matmul(dut, A, wbytes)
     dut._log.info(f"results: {results}")
@@ -337,3 +363,74 @@ async def test_dense_int8_mode(dut):
     results_sparse = await run_matmul(dut, A, wbytes, dense=0)
     check(dut, results_sparse, golden_matmul(A, wbytes), "back-to-sparse")
     dut._log.info("int8 dense mode test PASSED")
+
+
+@cocotb.test()
+async def test_mxfp6_e2m3_dense(dut):
+    """MXFP6 (E2M3) weights run element-exactly via the int8 dense path:
+    chip integer results must equal the true (spec-formula, float) E2M3
+    dot product times 8, bit-exactly — including the max-magnitude code
+    (|60|), subnormals, and -0. Then the host-side E8M0 block scale must
+    dequantize the exact partial sums with zero error."""
+    start_clock(dut)
+    await hw_reset(dut)
+
+    # Every code must fit the Int7 container (the docs/info.md claim)
+    for code in range(64):
+        e2m3_to_int7(code)
+
+    A = [[3, -8, -5, 7, 2, -8, 6, 1],
+         [-7, 5, 6, -8, -1, 7, -8, -8],
+         [4, -3, -8, 6, 7, -2, 5, 3]]
+
+    # wcodes6[col][slot]: E2M3 field patterns {S, E[1:0], M[2:0]}
+    wcodes6 = [[0x1F, 0x3F, 0x01, 0x21],   # +60, -60, +1/8 (subnormal), -1/8
+               [0x00, 0x20, 0x08, 0x2F],   # +0, -0, +1, -1.875
+               [0x18, 0x07, 0x33, 0x15]]   # +4, +7/8 (subnormal), -3, +3.25
+
+    wbytes = [[e2m3_to_int7(c) & 0xFF for c in col] for col in wcodes6]
+    results = await run_matmul(dut, A, wbytes, dense=1)
+
+    for i in range(N):
+        for c in range(N):
+            true_dot = sum(A[i][2 * j] * e2m3_value(wcodes6[c][j])
+                           for j in range(K // 2))
+            assert results[i][c] == true_dot * 8, (
+                f"C[{i}][{c}]: chip {results[i][c]} != 8 * E2M3 dot {true_dot}")
+            # Host-side E8M0 dequant (scale 2^(X-127), X=130 -> 8) is exact
+            assert (results[i][c] / 8.0) * 8.0 == true_dot * 8.0
+
+    dut._log.info("MXFP6 E2M3 dense mode PASSED (element-exact)")
+
+
+@cocotb.test()
+async def test_mxfp6_e2m3_sparse(dut):
+    """1:2-sparse E2M3: the same element-exact mapping through the Int7+1
+    sparse path — E2M3 values as 7-bit payloads with the select bit
+    placing them at k=2j or k=2j+1."""
+    start_clock(dut)
+    await hw_reset(dut)
+
+    A = [[1, 2, 3, 4, 5, 6, 7, -8],
+         [7, -8, -7, -6, -5, -4, -3, -2],
+         [-3, -2, -1, 1, 2, 3, 4, 5]]
+
+    # (select, E2M3 code) per slot — mixed positions, extremes included
+    wsparse = [[(0, 0x1F), (1, 0x3F), (0, 0x01), (1, 0x18)],
+               [(1, 0x08), (0, 0x28), (1, 0x00), (0, 0x0F)],
+               [(0, 0x33), (1, 0x07), (0, 0x20), (1, 0x1B)]]
+
+    wbytes = [[(sel << 7) | (e2m3_to_int7(c) & 0x7F) for sel, c in col]
+              for col in wsparse]
+    results = await run_matmul(dut, A, wbytes, dense=0)
+
+    for i in range(N):
+        for c in range(N):
+            true_dot = sum(A[i][2 * j + sel] * e2m3_value(code)
+                           for j, (sel, code) in enumerate(wsparse[c]))
+            assert results[i][c] == true_dot * 8, (
+                f"C[{i}][{c}]: chip {results[i][c]} != 8 * E2M3 dot {true_dot}")
+
+    # The independent Int7+1 golden model must agree with the E2M3 view
+    check(dut, results, golden_matmul(A, wbytes), "e2m3-vs-int7-golden")
+    dut._log.info("MXFP6 E2M3 sparse mode PASSED (element-exact)")

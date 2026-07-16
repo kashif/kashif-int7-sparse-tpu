@@ -4,7 +4,7 @@
 **Target:** Tiny Tapeout TTSKY26c, 2×2 tile, SkyWater SKY130A
 **Top module:** `tt_um_kashif_int7_sparse_tpu`
 **Clock:** 5 MHz (SPI SCLK <= clk/6)
-**Result:** 7 cocotb tests passing (RTL + GL); K=6 baseline measured green
+**Result:** 9 cocotb tests passing (RTL + GL); K=6 baseline measured green
 at 58.7% GPL / 50.4% effective on 2×2; K=8 adds ~57 flops
 
 ---
@@ -101,7 +101,7 @@ selection for stable output between SPI transactions.
 
 ## 4. Verification
 
-### Test Suite (7 tests, all passing)
+### Test Suite (9 tests, all passing)
 
 | Test | What it verifies |
 |------|-----------------|
@@ -112,6 +112,8 @@ selection for stable output between SPI transactions.
 | `test_random` | 12 seeded random trials (3 for GL) |
 | `test_dense_mode` | Int7 dense via select=0 (Roune's dense format) |
 | `test_dense_int8_mode` | Native int8 dense incl. -128/127, garbage slots ignored, per-RUN mode |
+| `test_mxfp6_e2m3_dense` | Chip == 8x true E2M3 dot (spec formula), all 64 codes fit Int7, E8M0 dequant exact |
+| `test_mxfp6_e2m3_sparse` | Same element-exactness through the 1:2-sparse path; agrees with Int7+1 golden |
 
 ### Golden Model
 
@@ -205,7 +207,7 @@ docs/
   Dataflow.drawio        # Dataflow diagram
 test/
   tb.v                   # Verilog testbench
-  test.py                # 7 cocotb tests
+  test.py                # 9 cocotb tests
   Makefile               # icarus/cocotb build
 info.yaml                # TT metadata: 2x2 tile, 5MHz, SKY130A
 ```

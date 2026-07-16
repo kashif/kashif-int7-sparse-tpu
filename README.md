@@ -109,14 +109,14 @@ src/
   pe.v          # Int7+1 sparse / int8 dense MAC
 test/
   tb.v          # Verilog testbench (GL_TEST compatible)
-  test.py       # 7 cocotb tests with independent golden model
+  test.py       # 9 cocotb tests with independent golden model
   Makefile      # icarus/cocotb build
 info.yaml       # TT metadata: 2x2 tile, 5 MHz, SKY130A
 ```
 
 ## Verification
 
-7 cocotb tests drive the SPI interface like an external host and compare
+9 cocotb tests drive the SPI interface like an external host and compare
 against an **independent golden model** (Int7+1 decode to dense matrix, plain
 matmul — shares no structure with the RTL):
 
@@ -129,6 +129,8 @@ matmul — shares no structure with the RTL):
 | `test_random` | 12 randomized full-coverage trials |
 | `test_dense_mode` | Int7 dense via select=0 (Roune's dense format) |
 | `test_dense_int8_mode` | Native int8 dense incl. -128/127, garbage in ignored slots, mode switching |
+| `test_mxfp6_e2m3_dense` | E2M3 weights via dense path == true (spec-formula) E2M3 dot x8, bit-exact; all 64 codes fit Int7 |
+| `test_mxfp6_e2m3_sparse` | E2M3 through the 1:2-sparse path, element-exact incl. |60|, subnormals, -0 |
 
 CI: RTL tests, GDS build, TT precheck, and gate-level test all green
 (K=6 baseline measured 58.7% utilization on 2x2; K=8 adds ~57 flops).
