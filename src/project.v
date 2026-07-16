@@ -6,7 +6,8 @@
  * contraction steps (1:2 structured sparsity along k). The select
  * bit muxes which INT4 activation of a pair gets multiplied — a
  * 4-bit mux replaces a second multiplier, so every cycle advances
- * two contraction steps. 9 weight bytes encode a dense 6x3 matrix.
+ * two contraction steps. 12 weight bytes encode a dense 8x3 matrix
+ * (K=8 — tiles power-of-two model dimensions with no padding).
  *
  * Architecture and SPI protocol follow the proven reference design
  * (github.com/MILOUDIAS/IEEE_ttsky_mini_tpu_spi), widened to 16-bit
@@ -37,7 +38,7 @@ module tt_um_kashif_int7_sparse_tpu (
 
     wire [15:0]  instruction;
     wire         ready_to_send;
-    wire [116:0] array_data_out;
+    wire [125:0] array_data_out;
     wire         miso;
 
     tpu u_tpu (

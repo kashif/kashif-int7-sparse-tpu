@@ -39,8 +39,8 @@ acc += value * (select ? a_odd : a_even)
 ```
 
 **A mux replaces a second multiplier.** Every cycle advances two contraction
-steps: 2x throughput per multiplier, 2x weight storage/bandwidth (9 bytes
-encode a dense-equivalent 6x3 matrix), zero sparsity metadata — unlike 2:4,
+steps: 2x throughput per multiplier, 2x weight storage/bandwidth (12 bytes
+encode a dense-equivalent 8x3 matrix), zero sparsity metadata — unlike 2:4,
 which needs a separate index.
 
 ### Two dense modes
@@ -48,16 +48,30 @@ which needs a separate index.
 - **Int7 dense**: set all select bits to 0 (Roune: "the dense format would
   just set the upper 8th bit to zero") — half throughput.
 - **Native int8 dense** (RUN flag): each byte is a full int8 weight for one
-  contraction step (K=3). Same PEs, same 7-cycle wavefront — the sparse/dense
+  contraction step (K=4). Same PEs, same 8-cycle wavefront — the sparse/dense
   2x throughput gap is measurable on one chip.
+
+### Bonus: element-exact MXFP6 (E2M3)
+
+Every MXFP6 E2M3 value maps exactly onto a 7-bit signed integer in the x8
+domain (subnormals 1-7, then 8+M scaled by 2^(E-1); max |60| < 64), so the
+chip runs **MXFP6 (E2M3) weights natively** — the accuracy-preferred MXFP6
+variant. The host converts E2M3 nibbles+sign to Int7 values, feeds them
+through either the 1:2-sparse or int8-dense path, and applies the E8M0
+per-32 block scales to the exact partial sums during dequantization (as the
+companion FP4 chips do for NVFP4/MXFP4). This is the same fixed-point
+pre-alignment used by FPGA tensor blocks for MXFP
+([arXiv:2607.13898](https://arxiv.org/abs/2607.13898)): E2M1 fits 5 signed
+bits, E2M3 fits exactly 7 — the Int7 container.
 
 ## Architecture
 
 Output-stationary systolic array following the silicon-proven
 [Mini-TPU v2](https://github.com/MILOUDIAS/IEEE_ttsky_mini_tpu_spi):
 activation pairs flow right, Int7+1 weight bytes flow down, results
-accumulate in place. Computes `C = A(3x6 INT4) x W(6x3)` exactly in 13-bit
-accumulators, in a 7-cycle skewed wavefront.
+accumulate in place. Computes `C = A(3x8 INT4) x W(8x3)` exactly in 14-bit
+accumulators, in an 8-cycle skewed wavefront. K=8 (sparse) tiles the
+power-of-two layer widths of real models with no padding.
 
 ```
             W col 0    W col 1    W col 2      (Int7+1 bytes, skewed)
@@ -73,10 +87,10 @@ A row 2 --> [PE 20] -> [PE 21] -> [PE 22]
 
 | Instruction | Format (binary)        | Description |
 |-------------|------------------------|-------------|
-| `LOAD A`    | `10 0 rr eee 0000aaaa` | INT4 activation into row `r` (0-2), element `e` (0-5) |
-| `LOAD B`    | `10 1 cc 0ss wwwwwwww` | Weight byte into column `c` (0-2), pair slot `s` (0-2) |
-| `RUN`       | `01 d 0000000000000`   | Clear accumulators, run 7 cycles; `d`=1 selects int8 dense |
-| `STORE`     | `11 b rr cc 000000000` | Result byte of C[r][c] on `uo_out` (`b`: low byte / high 5 bits) |
+| `LOAD A`    | `10 0 rr eee 0000aaaa` | INT4 activation into row `r` (0-2), element `e` (0-7) |
+| `LOAD B`    | `10 1 cc 0ss wwwwwwww` | Weight byte into column `c` (0-2), pair slot `s` (0-3) |
+| `RUN`       | `01 d 0000000000000`   | Clear accumulators, run 8 cycles; `d`=1 selects int8 dense |
+| `STORE`     | `11 b rr cc 000000000` | Result byte of C[r][c] on `uo_out` (`b`: low byte / high 6 bits) |
 
 Pins: `ui[0]`=MOSI, `ui[1]`=CS, `ui[2]`=SCLK; `uo_out`=result byte;
 `uio[0]`=MISO, `uio[1]`=ready.
@@ -87,22 +101,22 @@ Pins: `ui[0]`=MOSI, `ui[1]`=CS, `ui[2]`=SCLK; `uo_out`=result byte;
 src/
   project.v     # Top-level TT module (tt_um_kashif_int7_sparse_tpu)
   tpu.v         # Core: control + memories + array + result mux
-  spi.v         # SPI slave, 16-bit instructions, 117-bit readback
+  spi.v         # SPI slave, 16-bit instructions, 126-bit readback
   control.v     # LOAD/RUN/STORE decode, skewed wavefront counter
-  memory_a.v    # Activations: 3 rows x 6 INT4, read as pairs
-  memory_b.v    # Weights: 3 cols x 3 Int7+1 bytes (= dense 6x3)
-  array.v       # 3x3 systolic array, 13-bit accumulators
+  memory_a.v    # Activations: 3 rows x 8 INT4, read as pairs
+  memory_b.v    # Weights: 3 cols x 4 Int7+1 bytes (= dense 8x3)
+  array.v       # 3x3 systolic array, 14-bit accumulators
   pe.v          # Int7+1 sparse / int8 dense MAC
 test/
   tb.v          # Verilog testbench (GL_TEST compatible)
-  test.py       # 7 cocotb tests with independent golden model
+  test.py       # 9 cocotb tests with independent golden model
   Makefile      # icarus/cocotb build
 info.yaml       # TT metadata: 2x2 tile, 5 MHz, SKY130A
 ```
 
 ## Verification
 
-7 cocotb tests drive the SPI interface like an external host and compare
+9 cocotb tests drive the SPI interface like an external host and compare
 against an **independent golden model** (Int7+1 decode to dense matrix, plain
 matmul — shares no structure with the RTL):
 
@@ -115,9 +129,11 @@ matmul — shares no structure with the RTL):
 | `test_random` | 12 randomized full-coverage trials |
 | `test_dense_mode` | Int7 dense via select=0 (Roune's dense format) |
 | `test_dense_int8_mode` | Native int8 dense incl. -128/127, garbage in ignored slots, mode switching |
+| `test_mxfp6_e2m3_dense` | E2M3 weights via dense path == true (spec-formula) E2M3 dot x8, bit-exact; all 64 codes fit Int7 |
+| `test_mxfp6_e2m3_sparse` | E2M3 through the 1:2-sparse path, element-exact incl. |60|, subnormals, -0 |
 
-CI: RTL tests, GDS build (58.7% utilization on 2x2), TT precheck, and
-gate-level test all green.
+CI: RTL tests, GDS build, TT precheck, and gate-level test all green
+(K=6 baseline measured 58.7% utilization on 2x2; K=8 adds ~57 flops).
 
 ## ASIC Notes (per TT HDL guide + reference REPORT lessons)
 
@@ -125,7 +141,7 @@ gate-level test all green.
   pipeline registers
 - `(* keep *)` FFs drive `uio_oe`/`uio_out` — avoids conb/VGND LVS merges
 - Fixed uio directions; host-driven pins never output-enabled
-- 13-bit accumulators: exact for both modes (sparse max 1536, dense max 3072)
+- 14-bit accumulators: exact for both modes (sparse max 2048, dense max 4096)
 - `default_nettype none`, no `initial` blocks, `_unused` wire
 
 ## Target
@@ -138,6 +154,7 @@ gate-level test all green.
 
 - [Roune, "Designing AI Chip Software and Hardware" (2026)](https://docs.google.com/document/d/1dZ3vF8GE8_gx6tl52sOaUVEPq0ybmai1xvu3uk89_is/edit) — Section "Structured sparsity for systolic arrays"
 - [NVIDIA 2:4 Structured Sparsity in Ampere (blog)](https://developer.nvidia.com/blog/structured-sparsity-in-the-nvidia-ampere-architecture-and-applications-in-search-engines/) — 2:4 needs a separate index; Int7+1's select bit IS the index
+- [Jack of All Scales: A Versatile FPGA Tensor Block for MXFP Precisions (arXiv:2607.13898)](https://arxiv.org/abs/2607.13898) — MXFP-to-fixed-point pre-alignment; E2M3 -> 7 signed bits (the MXFP6 compatibility above)
 - [Mini-TPU v2](https://github.com/MILOUDIAS/IEEE_ttsky_mini_tpu_spi) — INT4 3x3 systolic, TT SKY26b; architecture and SPI protocol base
 - [PFW TPU](https://github.com/wangantian/pfw_tpu) — INT8 2x2 systolic, TT SKY26b
 - [TT HDL Guide](https://tinytapeout.com/hdl/) / [TT Tech Specs](https://tinytapeout.com/specs/)

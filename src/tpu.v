@@ -2,10 +2,10 @@
  * Int7+1 sparse mini-TPU core: control + operand memories + 3x3
  * systolic array + result readout mux.
  *
- * Computes C = A x W with A a 3x6 INT4 activation matrix and W a
- * dense-equivalent 6x3 weight matrix stored as 9 Int7+1 bytes
+ * Computes C = A x W with A a 3x8 INT4 activation matrix and W a
+ * dense-equivalent 8x3 weight matrix stored as 12 Int7+1 bytes
  * (1:2 structured sparsity along the contraction axis). Results are
- * exact 12-bit signed values, read out one byte at a time via STORE.
+ * exact 14-bit signed values, read out one byte at a time via STORE.
  */
 
 `default_nettype none
@@ -17,7 +17,7 @@ module tpu (
     input  wire [15:0]  instruction,
     output wire         ready_to_send,
     output wire [7:0]   result,
-    output wire [116:0] array_data_out
+    output wire [125:0] array_data_out
 );
 
     wire        array_write_enable;
@@ -105,21 +105,21 @@ module tpu (
     // Result readout: STORE latches {row, col, byte_sel}; the selected
     // accumulator byte drives `result` until the next STORE.
     // ------------------------------------------------------------------
-    wire [12:0] acc [0:8];
+    wire [13:0] acc [0:8];
     genvar i;
     generate
         for (i = 0; i < 9; i = i + 1) begin : extract_results
-            assign acc[i] = array_data_out[13*i +: 13];
+            assign acc[i] = array_data_out[14*i +: 14];
         end
     endgenerate
 
     // Index arithmetic in 4 bits — 2-bit operands would wrap modulo 4
     wire [3:0] sel_idx = {2'b0, store_row} * 4'd3 + {2'b0, store_col};
-    wire [12:0] selected = (store_row < 2'd3 && store_col < 2'd3)
+    wire [13:0] selected = (store_row < 2'd3 && store_col < 2'd3)
         ? acc[sel_idx]
-        : 13'd0;
+        : 14'd0;
 
-    assign result = store_byte_sel ? {3'b0, selected[12:8]}
+    assign result = store_byte_sel ? {2'b0, selected[13:8]}
                                    : selected[7:0];
 
 endmodule

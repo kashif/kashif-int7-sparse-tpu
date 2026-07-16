@@ -26,14 +26,15 @@ acc += value * (select ? a_odd : a_even)
 ```
 
 A mux replaces a second multiplier, so **every cycle advances two contraction
-steps** — 2x throughput per multiplier, and 9 weight bytes encode a
-dense-equivalent **6x3** weight matrix (2x storage and bandwidth).
+steps** — 2x throughput per multiplier, and 12 weight bytes encode a
+dense-equivalent **8x3** weight matrix (2x storage and bandwidth).
 
-The design computes `C = A x W` with `A` a 3x6 INT4 activation matrix and `W`
-the 6x3 dense-equivalent weight matrix. Results are exact 13-bit signed values
-(no truncation). A **native int8 dense mode** (RUN instruction flag) reuses
+The design computes `C = A x W` with `A` a 3x8 INT4 activation matrix and `W`
+the 8x3 dense-equivalent weight matrix. Results are exact 14-bit signed values
+(no truncation), and K=8 tiles the power-of-two layer widths of real models
+with no padding. A **native int8 dense mode** (RUN instruction flag) reuses
 the same PEs with each byte as a full int8 weight for one contraction step
-(K=3, half throughput) — so off-the-shelf int8-quantized models map directly,
+(K=4, half throughput) — so off-the-shelf int8-quantized models map directly,
 per Roune's compatibility recommendation. Architecture, SPI protocol, and skewed-wavefront control
 follow the proven reference mini-TPU
 ([MILOUDIAS/IEEE_ttsky_mini_tpu_spi](https://github.com/MILOUDIAS/IEEE_ttsky_mini_tpu_spi)),
@@ -44,14 +45,14 @@ widened to a 16-bit instruction. Block and dataflow diagrams:
 
 | Instruction | Format (binary)        | Description |
 |-------------|------------------------|-------------|
-| `LOAD A`    | `10 0 rr eee 0000aaaa` | INT4 activation `a` into row `r` (0-2), element `e` (0-5) |
-| `LOAD B`    | `10 1 cc 0ss wwwwwwww` | Int7+1 byte `w` into column `c` (0-2), pair slot `s` (0-2) |
-| `RUN`       | `01 d 0000000000000`   | Clear accumulators, run the wavefront (7 cycles); `d`=0 Int7+1 sparse (K=6), `d`=1 int8 dense (K=3) |
-| `STORE`     | `11 b rr cc 000000000` | Drive result byte of C[r][c] on `uo_out`: `b`=0 low byte, `b`=1 high 5 bits |
+| `LOAD A`    | `10 0 rr eee 0000aaaa` | INT4 activation `a` into row `r` (0-2), element `e` (0-7) |
+| `LOAD B`    | `10 1 cc 0ss wwwwwwww` | Int7+1 byte `w` into column `c` (0-2), pair slot `s` (0-3) |
+| `RUN`       | `01 d 0000000000000`   | Clear accumulators, run the wavefront (8 cycles); `d`=0 Int7+1 sparse (K=8), `d`=1 int8 dense (K=4) |
+| `STORE`     | `11 b rr cc 000000000` | Drive result byte of C[r][c] on `uo_out`: `b`=0 low byte, `b`=1 high 6 bits |
 
 SCLK must be at most clk/6 (the SPI bit counter crosses clock domains
 unsynchronised, as in the reference). The `ready` pin (uio[1]) pulses when a
-RUN completes; alternatively just wait 7+ clock cycles.
+RUN completes; alternatively just wait 8+ clock cycles.
 
 ## How to test
 
@@ -64,7 +65,7 @@ make -B
 
 The suite drives the SPI interface exactly like an external host and checks
 the full `C = A x W` result against an **independent golden model** (Int7+1
-bytes decoded to a dense 6x3 matrix, then a plain matrix multiply). It
+bytes decoded to a dense 8x3 matrix, then a plain matrix multiply). It
 includes select-bit semantics tests, a non-degeneracy test (equal-sum
 activation matrices must produce different results), accumulator-clear checks,
 and randomized full-coverage trials.
@@ -85,7 +86,7 @@ MOSI/CS/SCLK and reads the result bytes on `uo_out`.
 | Activation | INT4 | Ternary {-1,0,+1} | **INT4 pairs** |
 | Multiplier | 4×4 hardware | None (MUX-add) | **7×4 hardware + 4-bit mux** |
 | Sparsity | None | None | **50% baked in (1:2)** |
-| Computation | Matrix-matrix (GEMM) | Matrix-vector | **True GEMM (K=6)** |
+| Computation | Matrix-matrix (GEMM) | Matrix-vector | **True GEMM (K=8)** |
 | PE registers | 3 | 2 | **3** |
 | PE gates | ~200+ | ~74 | **~180-230** |
 | FFs per PE | 12 | 14 | **28** |
@@ -95,7 +96,7 @@ MOSI/CS/SCLK and reads the result bytes on `uo_out`.
 | Weight reuse | Yes | No | **Yes** |
 | ReLU | No | Yes | **No** |
 | Tile | 1×1 | 1×1 | **1×2** |
-| Accumulator | 4-bit (mod 16) | 10-bit signed | **13-bit signed (exact)** |
+| Accumulator | 4-bit (mod 16) | 10-bit signed | **14-bit signed (exact)** |
 | Native int8 dense mode | No | No | **Yes (RUN flag, half rate)** |
 | Numerics | Educational INT4 | NVFP4 (Blackwell) | **Int7+1 (Roune's concept)** |
 
@@ -127,11 +128,32 @@ Additionally, per Roune's compatibility argument ("many models are quantized
 to int8 and not int7... your customers will have an easier time finding
 off-the-shelf quantized models if you do support int8"), the RUN
 instruction's `d` flag enables **native int8 dense mode**: each weight byte
-is a full int8 value for a single contraction step (K=3), and only even
-activation slots (elements 0, 2, 4) participate. Same PEs, same 7-cycle
-wavefront — sparse Int7+1 gets K=6 in the time int8 dense gets K=3, which
+is a full int8 value for a single contraction step (K=4), and only even
+activation slots (elements 0, 2, 4, 6) participate. Same PEs, same 8-cycle
+wavefront — sparse Int7+1 gets K=8 in the time int8 dense gets K=4, which
 is exactly the 2x structured-sparsity throughput claim, measurable on one
 chip.
+
+### Element-Exact MXFP6 (E2M3) Compatibility
+
+Every MXFP6 E2M3 element converts exactly to a 7-bit signed integer in the
+x8 integer domain, so E2M3-quantized weights run natively on this chip —
+through the 1:2-sparse path (after 1:2 pruning) or the int8 dense path —
+with the E8M0 per-32-element block scales applied by the host to the exact
+partial sums:
+
+| E2M3 field pattern | Value | x8 integer |
+|--------------------|-------|------------|
+| E=0 (subnormal), M=1..7 | M/8 | 1..7 |
+| E=1, M=0..7 | (8+M)/8 | 8..15 |
+| E=2, M=0..7 | (8+M)/4 | 16..30 (even) |
+| E=3, M=0..7 | (8+M)/2 | 32..60 (step 4) |
+
+Max magnitude is 60 (< 64), the sign bit negates, and products stay within
+the accumulator bounds (|w| <= 60 is stricter than the int8 dense bound).
+This is the fixed-point pre-alignment used by FPGA tensor blocks for MXFP
+(arXiv:2607.13898): E2M1 needs 5 signed bits, E2M3 exactly 7 — Int7 is the
+natural container for the accuracy-preferred MXFP6 variant.
 
 ### Sparsity Applies to Weights, Not Activations
 
